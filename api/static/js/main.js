@@ -42,11 +42,16 @@ function setOutput(outputElId, text, kind, thinkingText) {
   const tabsEl = document.getElementById("tabs_" + outputElId.replace("output_", ""));
 
   outputEl.textContent = text || "";
-  outputEl.className = "output-box " + (kind || "empty");
+  outputEl.className = "output-box";
+  if (kind === "error") outputEl.classList.add("error");
+  else if (kind === "loading") outputEl.classList.add("loading");
+  else if (!text) outputEl.classList.add("empty");
 
   if (thinkingEl) {
     thinkingEl.textContent = thinkingText || "";
-    thinkingEl.className = "output-box thinking " + (kind || "empty");
+    thinkingEl.className = "output-box thinking";
+    if (kind === "error") thinkingEl.classList.add("error");
+    else if (!thinkingText) thinkingEl.classList.add("empty");
     if (thinkingText) {
       thinkingEl.style.display = "block";
       if (tabsEl) {
@@ -66,7 +71,33 @@ function setOutput(outputElId, text, kind, thinkingText) {
   if (tabsEl) showOutputTab(tabsEl, "answer"); // Default to answer tab
 }
 
-function setLoading(outputElId, btnId, loading) {
+let documentElapsedTimer = null;
+
+function stopDocumentElapsedTimer() {
+  if (documentElapsedTimer) {
+    clearInterval(documentElapsedTimer);
+    documentElapsedTimer = null;
+  }
+}
+
+function startDocumentElapsedTimer(outputElId, prefix) {
+  stopDocumentElapsedTimer();
+  const outputEl = document.getElementById(outputElId);
+  const started = Date.now();
+  documentElapsedTimer = setInterval(() => {
+    if (!outputEl) return;
+    const seconds = Math.floor((Date.now() - started) / 1000);
+    outputEl.textContent = prefix + " (" + seconds + "s elapsed…)";
+  }, 1000);
+}
+
+function formatDurationMs(ms) {
+  if (ms == null || !Number.isFinite(ms)) return "";
+  if (ms < 1000) return ms + " ms";
+  return (ms / 1000).toFixed(1) + " s";
+}
+
+function setLoading(outputElId, btnId, loading, message) {
   const btn = document.getElementById(btnId);
   const outputEl = document.getElementById(outputElId);
   const thinkingEl = document.getElementById(outputElId + "_thinking");
@@ -75,7 +106,7 @@ function setLoading(outputElId, btnId, loading) {
   if (btn) btn.disabled = loading;
   if (loading) {
     if (outputEl) {
-      outputEl.textContent = "Waiting for response…";
+      outputEl.textContent = message || "Waiting for response…";
       outputEl.className = "output-box loading";
     }
     if (thinkingEl) {
@@ -202,6 +233,8 @@ function clearTerminalResponseHistory() {
   terminalResponseCounter = 0;
 }
 
+const DEFAULT_PANEL = "payloads";
+
 function showPanel(panelId) {
   document.querySelectorAll("#main_body .panel").forEach(p => p.classList.remove("active"));
   document.querySelectorAll("#main_menu li").forEach(li => li.classList.remove("selected"));
@@ -224,7 +257,7 @@ function updateSessionUI(data) {
       document.getElementById("panel_mfa").classList.add("active");
     } else {
       document.getElementById("panel_mfa").classList.remove("active");
-      if (!document.querySelector("#main_body .panel.active")) showPanel("direct");
+      if (!document.querySelector("#main_body .panel.active")) showPanel(DEFAULT_PANEL);
     }
   } else {
     userLabel.textContent = "";
@@ -241,6 +274,7 @@ document.getElementById("main_menu").addEventListener("click", (e) => {
     showPanel(li.dataset.panel);
     if (li.dataset.panel === "rag") loadRagDocuments();
     if (li.dataset.panel === "payloads") loadPayloadsList();
+    if (li.dataset.panel === "document" || li.dataset.panel === "rag") loadDocuments();
   }
 });
 
@@ -250,7 +284,7 @@ document.getElementById("btn_logout").addEventListener("click", async () => {
   await fetch(API + "/logout", { method: "POST", credentials: "include" });
   const data = await getSession();
   updateSessionUI(data);
-  showPanel("direct");
+  showPanel(DEFAULT_PANEL);
 });
 
 document.getElementById("form_login").addEventListener("submit", async (e) => {
@@ -274,7 +308,7 @@ document.getElementById("form_login").addEventListener("submit", async (e) => {
   const session = await getSession();
   updateSessionUI(session);
   if (session.user && !session.user.mfa_verified) showPanel("mfa");
-  else showPanel("direct");
+  else showPanel(DEFAULT_PANEL);
 });
 
 document.getElementById("form_mfa").addEventListener("submit", async (e) => {
@@ -296,7 +330,7 @@ document.getElementById("form_mfa").addEventListener("submit", async (e) => {
   }
   const session = await getSession();
   updateSessionUI(session);
-  showPanel("direct");
+  showPanel(DEFAULT_PANEL);
 });
 
 function getDirectModelId() {
@@ -353,19 +387,61 @@ document.getElementById("send_direct").addEventListener("click", async () => {
   }
 });
 
+function appendSelectSectionHeader(select, label) {
+  const header = document.createElement("option");
+  header.disabled = true;
+  header.textContent = label;
+  header.value = "";
+  select.appendChild(header);
+}
+
+function populateDocumentSelect(selectId, data) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  sel.innerHTML = '<option value="">-- Select a document --</option>';
+  const uploaded = data.documents || [];
+  const payloads = data.payload_files || [];
+  if (uploaded.length) {
+    appendSelectSectionHeader(sel, "Uploaded documents");
+    uploaded.forEach(d => {
+      const opt = document.createElement("option");
+      opt.value = String(d.id);
+      opt.textContent = d.filename + " (id " + d.id + ")";
+      opt.dataset.ragSource = d.filename || ("document_" + d.id);
+      sel.appendChild(opt);
+    });
+  }
+  if (payloads.length) {
+    appendSelectSectionHeader(sel, "Generated payloads");
+    payloads.forEach(f => {
+      const rel = f.relative_path || f.name;
+      const opt = document.createElement("option");
+      opt.value = "payload:" + rel;
+      opt.textContent = rel + (f.size != null ? " (" + f.size + " B)" : "");
+      opt.dataset.ragSource = rel;
+      sel.appendChild(opt);
+    });
+  }
+}
+
+function parseDocumentSelection(value) {
+  if (!value) return null;
+  if (value.startsWith("payload:")) {
+    return {
+      context_from: "payload",
+      payload_relative_path: value.slice("payload:".length),
+    };
+  }
+  const documentId = parseInt(value, 10);
+  if (!Number.isFinite(documentId)) return null;
+  return { context_from: "upload", document_id: documentId };
+}
+
 async function loadDocuments() {
   const r = await fetch(API + "/documents", { credentials: "include" });
   const data = await r.json().catch(() => ({}));
-  const sel = document.getElementById("doc_select");
-  const first = sel.options[0];
-  sel.innerHTML = "";
-  sel.appendChild(first);
-  (data.documents || []).forEach(d => {
-    const opt = document.createElement("option");
-    opt.value = d.id;
-    opt.textContent = d.filename + " (id " + d.id + ")";
-    sel.appendChild(opt);
-  });
+  populateDocumentSelect("doc_select", data);
+  populateDocumentSelect("rag_doc_select", data);
 }
 
 document.getElementById("btn_upload").addEventListener("click", async () => {
@@ -393,17 +469,105 @@ document.getElementById("btn_upload").addEventListener("click", async () => {
   loadDocuments();
 });
 
-document.getElementById("send_document").addEventListener("click", async () => {
-  const docId = document.getElementById("doc_select").value;
-  const prompt = document.getElementById("prompt_document").value.trim();
-  if (!prompt) return;
-  if (!docId) {
-    setOutput("output_document", "Select a document first.", "error");
+async function previewDocumentExtraction() {
+  const previewEl = document.getElementById("doc_extract_preview");
+  const visionEl = document.getElementById("doc_use_vision");
+  const visionHint = document.getElementById("doc_vision_hint");
+  const selection = parseDocumentSelection(document.getElementById("doc_select").value);
+  if (!previewEl) return;
+  if (!selection) {
+    previewEl.style.display = "none";
+    previewEl.textContent = "";
+    setDocumentAudioPreview(null, null);
+    if (visionEl) {
+      visionEl.checked = false;
+      visionEl.disabled = true;
+    }
+    if (visionHint) {
+      visionHint.textContent = "Images: optional vision mode. Audio: Whisper transcription. PDF/text use text extraction.";
+    }
     return;
   }
-  setLoading("output_document", "send_document", true);
+  previewEl.style.display = "block";
+  previewEl.textContent = "Running extraction preview…";
   try {
-    const body = { prompt, context_from: "upload", document_id: parseInt(docId, 10) };
+    const params = new URLSearchParams();
+    if (selection.context_from === "payload") {
+      params.set("payload_relative_path", selection.payload_relative_path);
+    } else {
+      params.set("document_id", String(selection.document_id));
+    }
+    const r = await fetch(API + "/documents/extract-preview?" + params.toString(), { credentials: "include" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      previewEl.textContent = data.error || "Could not preview extracted text.";
+      return;
+    }
+    const text = (data.text || "").trim();
+    const preview = text ? text.slice(0, 400) + (text.length > 400 ? "…" : "") : "(no text extracted)";
+    const warning = data.warning ? ("Warning: " + data.warning + "\n\n") : "";
+    const backend = data.extraction_backend
+      ? ("Backend: " + data.extraction_backend + (data.whisper_model ? " (" + data.whisper_model + ")" : "") + "\n")
+      : (data.transcription_backend
+        ? ("Transcription: " + data.transcription_backend + (data.whisper_model ? " (" + data.whisper_model + ")" : "") + "\n")
+        : "");
+    const timing = data.extraction_ms != null ? ("Completed in " + formatDurationMs(data.extraction_ms) + "\n\n") : "";
+    const ocrHint = data.ocr_hint ? ("Note: " + data.ocr_hint + "\n\n") : "";
+    previewEl.textContent = warning + backend + timing + ocrHint + "Extracted text preview (" + (data.chars || 0) + " chars):\n" + preview;
+
+    if (visionEl) {
+      const supportsVision = !!data.supports_vision;
+      visionEl.disabled = !supportsVision;
+      if (!supportsVision) visionEl.checked = false;
+    }
+    if (visionHint) {
+      if (data.supports_vision) {
+        visionHint.textContent = "Image selected — OCR preview above (~3–10s). Vision mode sends pixels to qwen2.5vl (~30–90s).";
+      } else if (data.file_kind === "audio") {
+        visionHint.textContent = "Audio selected — use the player below to listen; the LLM receives the Whisper transcript only.";
+      } else {
+        visionHint.textContent = "Vision mode is only available for image files (" + (data.file_kind || "other") + " selected). PDF, text, and audio use text extraction.";
+      }
+    }
+    setDocumentAudioPreview(selection, data.file_kind);
+  } catch (err) {
+    previewEl.textContent = err.message || "Could not preview extracted text.";
+    setDocumentAudioPreview(selection, null);
+  }
+}
+
+document.getElementById("doc_select").addEventListener("change", previewDocumentExtraction);
+
+document.getElementById("send_document").addEventListener("click", async () => {
+  const selected = document.getElementById("doc_select").value;
+  const prompt = document.getElementById("prompt_document").value.trim();
+  if (!prompt) return;
+  const selection = parseDocumentSelection(selected);
+  if (!selection) {
+    setOutput("output_document", "Select a document or generated payload first.", "error");
+    return;
+  }
+  const useVision = document.getElementById("doc_use_vision") && document.getElementById("doc_use_vision").checked;
+  if (useVision) {
+    setLoading(
+      "output_document",
+      "send_document",
+      true,
+      "Vision model processing (qwen2.5vl) — typically 30–90 seconds…"
+    );
+    startDocumentElapsedTimer(
+      "output_document",
+      "Vision model processing (qwen2.5vl) — typically 30–90 seconds"
+    );
+  } else {
+    setLoading("output_document", "send_document", true);
+  }
+  try {
+    const body = {
+      prompt,
+      ...selection,
+      context_mode: useVision ? "vision" : "extract",
+    };
     const r = await fetch(API + "/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -418,26 +582,99 @@ document.getElementById("send_document").addEventListener("click", async () => {
       return;
     }
     setOutput("output_document", data.response ?? "", "", data.thinking ?? "");
+    if (data.duration_ms != null) {
+      appendTerminalLine(
+        "Request completed in " + formatDurationMs(data.duration_ms)
+          + (data.context_mode === "vision" ? " (vision model)" : ""),
+        "muted"
+      );
+    }
+    if (data.context_mode) {
+      appendTerminalLine("Document context mode: " + data.context_mode + (data.vision_model ? " (" + data.vision_model + ")" : ""), "muted");
+    }
+    if (data.transcription_backend) {
+      appendTerminalLine(
+        "Audio transcription: " + data.transcription_backend + (data.whisper_model ? " (" + data.whisper_model + ")" : ""),
+        "muted"
+      );
+    }
+    if (data.context_warning) {
+      appendTerminalLine("Document extraction warning: " + data.context_warning, "fail");
+    }
+    if (data.context_extracted != null) {
+      const preview = String(data.context_extracted).slice(0, 500);
+      appendTerminalLine("Context sent to model (" + String(data.context_extracted).length + " chars): " + preview, "muted");
+    }
     addTerminalResponseToHistory(data.response ?? "", data.thinking ?? "", "Document");
   } catch (err) {
     setOutput("output_document", err.message || "Network error", "error");
     appendTerminalLine("Document chat: " + (err.message || "Network error"), "fail");
   } finally {
+    stopDocumentElapsedTimer();
     setLoading("output_document", "send_document", false);
   }
 });
 
+function resolveWebUrl(raw) {
+  let url = (raw || "").trim();
+  if (!url) return "";
+  if (!url.startsWith("http") && !url.startsWith("/")) url = "/" + url;
+  if (url.startsWith("/")) url = window.location.origin + url;
+  return url;
+}
+
+async function previewWebFetch() {
+  const previewEl = document.getElementById("web_fetch_preview");
+  const urlInput = document.getElementById("web_url");
+  if (!previewEl || !urlInput) return;
+  const url = resolveWebUrl(urlInput.value);
+  if (!url) {
+    previewEl.style.display = "none";
+    previewEl.textContent = "";
+    return;
+  }
+  previewEl.style.display = "block";
+  previewEl.textContent = "Fetching and extracting page text…";
+  try {
+    const params = new URLSearchParams({ url });
+    const r = await fetch(API + "/web/fetch-preview?" + params.toString(), { credentials: "include" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      previewEl.textContent = data.error || "Could not fetch URL.";
+      return;
+    }
+    const warning = data.warning ? ("Warning: " + data.warning + "\n\n") : "";
+    const timing = data.extraction_ms != null
+      ? ("Fetch: " + (data.fetch_backend || "?") + " + " + (data.extractor || "extract") + " in " + formatDurationMs(data.extraction_ms) + "\n\n")
+      : "";
+    const title = data.title ? ("Title: " + data.title + "\n") : "";
+    const meta = data.meta_description ? ("Meta: " + data.meta_description + "\n\n") : "";
+    const visible = data.visible_text
+      ? ("Visible text:\n" + data.visible_text.slice(0, 500) + (data.visible_text.length > 500 ? "…" : "") + "\n\n")
+      : "";
+    const hidden = data.hidden_text
+      ? ("Hidden HTML text (sent to model):\n" + data.hidden_text.slice(0, 500) + (data.hidden_text.length > 500 ? "…" : "") + "\n\n")
+      : "";
+    previewEl.textContent = warning + timing + title + meta + visible + hidden
+      + "Full context preview (" + (data.chars || 0) + " chars):\n"
+      + ((data.preview || data.text || "").slice(0, 600) || "(empty)");
+  } catch (err) {
+    previewEl.textContent = err.message || "Could not fetch URL.";
+  }
+}
+
+document.getElementById("web_url").addEventListener("change", previewWebFetch);
+document.getElementById("web_url").addEventListener("blur", previewWebFetch);
+
 document.getElementById("send_web").addEventListener("click", async () => {
-  let url = document.getElementById("web_url").value.trim();
+  let url = resolveWebUrl(document.getElementById("web_url").value.trim());
   const prompt = document.getElementById("prompt_web").value.trim();
   if (!prompt) return;
-  if (url && !url.startsWith("http") && !url.startsWith("/")) url = "/" + url;
-  if (url && url.startsWith("/")) url = window.location.origin + url;
   if (!url) {
     setOutput("output_web", "Enter a URL (e.g. /evil/ or https://...).", "error");
     return;
   }
-  setLoading("output_web", "send_web", true);
+  setLoading("output_web", "send_web", true, "Fetching URL and querying model…");
   try {
     const body = { prompt, context_from: "url", url };
     const r = await fetch(API + "/chat", {
@@ -453,7 +690,21 @@ document.getElementById("send_web").addEventListener("click", async () => {
       appendTerminalJson(data);
       return;
     }
-    setOutput("output_web", data.response ?? "", "", data.thinking ?? "");
+    if (data.context_warning && !data.context_extracted) {
+      setOutput("output_web", data.context_warning, "error");
+    } else {
+      setOutput("output_web", data.response ?? "", "", data.thinking ?? "");
+    }
+    if (data.duration_ms != null) {
+      appendTerminalLine("Web request completed in " + formatDurationMs(data.duration_ms), "muted");
+    }
+    if (data.context_warning) {
+      appendTerminalLine("Web fetch warning: " + data.context_warning, "fail");
+    }
+    if (data.context_extracted != null) {
+      const preview = String(data.context_extracted).slice(0, 500);
+      appendTerminalLine("Page context sent to model (" + String(data.context_extracted).length + " chars): " + preview, "muted");
+    }
     addTerminalResponseToHistory(data.response ?? "", data.thinking ?? "", "Web");
   } catch (err) {
     setOutput("output_web", err.message || "Network error", "error");
@@ -687,18 +938,7 @@ document.getElementById("send_template").addEventListener("click", async () => {
 });
 
 async function loadRagDocuments() {
-  const r = await fetch(API + "/documents", { credentials: "include" });
-  const data = await r.json().catch(() => ({}));
-  const sel = document.getElementById("rag_doc_select");
-  const first = sel.options[0];
-  sel.innerHTML = "";
-  sel.appendChild(first);
-  (data.documents || []).forEach(d => {
-    const opt = document.createElement("option");
-    opt.value = d.id;
-    opt.textContent = d.filename + " (id " + d.id + ")";
-    sel.appendChild(opt);
-  });
+  await loadDocuments();
 }
 
 document.getElementById("rag_btn_add_chunk").addEventListener("click", async () => {
@@ -730,18 +970,26 @@ document.getElementById("rag_btn_add_chunk").addEventListener("click", async () 
 });
 
 document.getElementById("rag_btn_add_document").addEventListener("click", async () => {
-  const docId = document.getElementById("rag_doc_select").value;
+  const selected = document.getElementById("rag_doc_select").value;
   const statusEl = document.getElementById("rag_add_doc_status");
-  if (!docId) {
-    statusEl.textContent = "Select a document first.";
+  const selection = parseDocumentSelection(selected);
+  if (!selection) {
+    statusEl.textContent = "Select a document or generated payload first.";
     return;
   }
   statusEl.textContent = "Adding…";
   try {
-    const r = await fetch(API + "/rag/add-document/" + docId, {
-      method: "POST",
-      credentials: "include",
-    });
+    const r = selection.context_from === "payload"
+      ? await fetch(API + "/rag/add-payload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ payload_relative_path: selection.payload_relative_path }),
+        })
+      : await fetch(API + "/rag/add-document/" + selection.document_id, {
+          method: "POST",
+          credentials: "include",
+        });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
       statusEl.textContent = data.error || r.statusText || "Failed";
@@ -756,15 +1004,80 @@ document.getElementById("rag_btn_add_document").addEventListener("click", async 
   }
 });
 
+function getRagSourceFilter() {
+  const limitEl = document.getElementById("rag_limit_source");
+  if (limitEl && !limitEl.checked) return null;
+  const sel = document.getElementById("rag_doc_select");
+  if (!sel || !sel.value) return undefined;
+  const opt = sel.options[sel.selectedIndex];
+  return opt && opt.dataset.ragSource ? opt.dataset.ragSource : null;
+}
+
+async function previewRagRetrieval() {
+  const previewEl = document.getElementById("rag_retrieve_preview");
+  const promptEl = document.getElementById("rag_chat_prompt");
+  if (!previewEl || !promptEl) return;
+  const q = promptEl.value.trim();
+  if (!q) {
+    previewEl.style.display = "none";
+    previewEl.textContent = "";
+    return;
+  }
+  const sourceFilter = getRagSourceFilter();
+  if (sourceFilter === undefined) {
+    previewEl.style.display = "block";
+    previewEl.textContent =
+      "Limit to selected document is checked, but no document is selected. Pick one from the dropdown or uncheck the limit.";
+    return;
+  }
+  previewEl.style.display = "block";
+  previewEl.textContent = "Searching indexed chunks…";
+  try {
+    const params = new URLSearchParams({ q });
+    if (sourceFilter) params.set("rag_source", sourceFilter);
+    const r = await fetch(API + "/rag/retrieve-preview?" + params.toString(), { credentials: "include" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      previewEl.textContent = data.error || "Could not preview retrieval.";
+      return;
+    }
+    const scope = data.rag_source
+      ? ("Source filter: " + data.rag_source + "\n\n")
+      : "Source filter: (all indexed sources)\n\n";
+    const warning = data.warning ? ("Warning: " + data.warning + "\n\n") : "";
+    const count = (data.chunks || []).length;
+    const header = scope + warning + "Retrieved " + count + " chunk(s):\n\n";
+    const body = (data.formatted_preview || "").slice(0, 1200);
+    previewEl.textContent = header + (body || "(no matching chunks)") + (body.length >= 1200 ? "…" : "");
+  } catch (err) {
+    previewEl.textContent = err.message || "Could not preview retrieval.";
+  }
+}
+
+document.getElementById("rag_btn_preview").addEventListener("click", previewRagRetrieval);
+document.getElementById("rag_chat_prompt").addEventListener("blur", previewRagRetrieval);
+document.getElementById("rag_limit_source").addEventListener("change", previewRagRetrieval);
+document.getElementById("rag_doc_select").addEventListener("change", previewRagRetrieval);
+
 document.getElementById("rag_btn_chat").addEventListener("click", async () => {
   const prompt = document.getElementById("rag_chat_prompt").value.trim();
   if (!prompt) {
     setOutput("output_rag", "Enter your prompt.", "error");
     return;
   }
+  const sourceFilter = getRagSourceFilter();
+  if (sourceFilter === undefined) {
+    setOutput(
+      "output_rag",
+      "Limit to selected document is checked, but no document is selected. Pick one or uncheck the limit.",
+      "error",
+    );
+    return;
+  }
   setLoading("output_rag", "rag_btn_chat", true);
   try {
     const body = { prompt, context_from: "rag", rag_query: prompt };
+    if (sourceFilter) body.rag_source = sourceFilter;
     const r = await fetch(API + "/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -778,7 +1091,29 @@ document.getElementById("rag_btn_chat").addEventListener("click", async () => {
       appendTerminalJson(data);
       return;
     }
-    setOutput("output_rag", data.response ?? "", "", data.thinking ?? "");
+    if (data.context_warning && !data.context_extracted) {
+      setOutput("output_rag", data.context_warning, "error");
+    } else {
+      setOutput("output_rag", data.response ?? "", "", data.thinking ?? "");
+    }
+    if (data.rag_source_filter) {
+      appendTerminalLine("RAG source filter: " + data.rag_source_filter, "muted");
+    } else {
+      appendTerminalLine("RAG source filter: (all indexed sources)", "muted");
+    }
+    if (data.rag_chunk_count != null) {
+      appendTerminalLine("RAG chunks retrieved: " + data.rag_chunk_count, "muted");
+    }
+    if (data.context_warning) {
+      appendTerminalLine("RAG warning: " + data.context_warning, "fail");
+    }
+    if (data.context_extracted != null) {
+      const preview = String(data.context_extracted).slice(0, 500);
+      appendTerminalLine(
+        "Retrieved context sent to model (" + String(data.context_extracted).length + " chars): " + preview,
+        "muted",
+      );
+    }
     addTerminalResponseToHistory(data.response ?? "", data.thinking ?? "", "RAG");
   } catch (err) {
     setOutput("output_rag", err.message || "Network error", "error");
@@ -1044,6 +1379,50 @@ document.getElementById("main_menu").addEventListener("click", function(e) {
   if (li && li.dataset.panel === "payloads") setTimeout(schedulePayloadPreview, 50);
 });
 
+function apiPathFileUrl(pathPrefix, relativeOrId, cacheKey, inline) {
+  const encodedPath = String(relativeOrId || "").replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
+  let url = API + pathPrefix + encodedPath;
+  const params = [];
+  if (cacheKey != null && cacheKey !== "") params.push("v=" + encodeURIComponent(String(cacheKey)));
+  if (inline) params.push("inline=1");
+  if (params.length) url += "?" + params.join("&");
+  return url;
+}
+
+function payloadFileUrl(relativePath, cacheKey, inline) {
+  return apiPathFileUrl("/payloads/file/", relativePath, cacheKey, inline);
+}
+
+function documentFileUrl(documentId, cacheKey, inline) {
+  return apiPathFileUrl("/documents/file/", String(documentId), cacheKey, inline);
+}
+
+function setDocumentAudioPreview(selection, fileKind) {
+  const wrap = document.getElementById("doc_audio_preview");
+  const player = document.getElementById("doc_audio_player");
+  if (!wrap || !player) return;
+  if (!selection || fileKind !== "audio") {
+    player.removeAttribute("src");
+    player.load();
+    wrap.style.display = "none";
+    return;
+  }
+  const cacheKey = Date.now();
+  let src = "";
+  if (selection.context_from === "payload") {
+    src = payloadFileUrl(selection.payload_relative_path, cacheKey, true);
+  } else if (selection.context_from === "upload") {
+    src = documentFileUrl(selection.document_id, cacheKey, true);
+  }
+  if (!src) {
+    wrap.style.display = "none";
+    return;
+  }
+  player.src = src;
+  player.load();
+  wrap.style.display = "block";
+}
+
 async function loadPayloadsList() {
   try {
     const r = await fetch(API + "/payloads/list", { credentials: "include" });
@@ -1063,7 +1442,8 @@ async function loadPayloadsList() {
     files.forEach(f => {
       const tr = document.createElement("tr");
       const rel = f.relative_path || f.name;
-      const downloadUrl = API + "/payloads/file/" + encodeURIComponent(rel);
+      const cacheKey = f.mtime != null ? f.mtime : (f.size != null ? f.size : Date.now());
+      const downloadUrl = payloadFileUrl(rel, cacheKey);
       tr.innerHTML = "<td>" + escapeHtml(f.name) + "</td><td><code>" + escapeHtml(rel) + "</code></td><td>" + (f.size != null ? f.size + " B" : "") + "</td><td><a href=\"" + escapeHtml(downloadUrl) + "\" target=\"_blank\" rel=\"noopener\">Download</a></td>";
       tbody.appendChild(tr);
     });
@@ -1078,6 +1458,13 @@ function escapeHtml(s) {
   const div = document.createElement("div");
   div.textContent = s;
   return div.innerHTML;
+}
+
+function parsePayloadNumber(id, fallback) {
+  const el = document.getElementById(id);
+  if (!el) return fallback;
+  const value = parseFloat(el.value);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 document.getElementById("btn_payload_generate").addEventListener("click", async () => {
@@ -1153,6 +1540,19 @@ document.getElementById("btn_payload_generate").addEventListener("click", async 
   }
   if (assetType === "audio_tts") {
     body.text = document.getElementById("payload_tts_text").value;
+    body.overlay_text = document.getElementById("payload_tts_overlay_text").value.trim();
+    body.overlay_level = parsePayloadNumber("payload_tts_overlay_level", 0.15);
+    body.noise_level = parsePayloadNumber("payload_tts_noise_level", 0);
+    body.background_tone_hz = parsePayloadNumber("payload_tts_background_tone_hz", 0);
+    body.background_tone_level = parsePayloadNumber("payload_tts_background_tone_level", 0.2);
+    body.pitch_semitones = parsePayloadNumber("payload_tts_pitch_semitones", 0);
+    body.speed_factor = parsePayloadNumber("payload_tts_speed_factor", 1);
+    body.echo_delay_ms = parsePayloadNumber("payload_tts_echo_delay_ms", 0);
+    body.echo_decay = parsePayloadNumber("payload_tts_echo_decay", 0.4);
+    body.distortion = parsePayloadNumber("payload_tts_distortion", 0);
+    body.gain_db = parsePayloadNumber("payload_tts_gain_db", 0);
+    body.low_pass_hz = parsePayloadNumber("payload_tts_low_pass_hz", 0);
+    body.high_pass_hz = parsePayloadNumber("payload_tts_high_pass_hz", 0);
     body.filename = document.getElementById("payload_filename_tts").value.trim() || undefined;
   }
   document.getElementById("btn_payload_generate").disabled = true;
@@ -1227,15 +1627,36 @@ document.getElementById("btn_payload_generate").addEventListener("click", async 
       return;
     }
     const rel = data.relative_path || data.path || "";
-    const downloadUrl = rel ? (API + "/payloads/file/" + encodeURIComponent(rel)) : "";
+    const cacheKey = Date.now();
+    const downloadUrl = rel ? payloadFileUrl(rel, cacheKey, false) : "";
+    const playbackUrl = rel ? payloadFileUrl(rel, cacheKey, true) : "";
     document.getElementById("payload_download_link").href = downloadUrl;
     document.getElementById("payload_download_link").textContent = data.path || rel || "file";
     document.getElementById("payload_relative_path").textContent = rel;
+    const audioPreview = document.getElementById("payload_audio_preview");
+    const audioPlayer = document.getElementById("payload_audio_player");
+    if (audioPreview && audioPlayer) {
+      const isAudio = assetType === "audio_synthetic" || assetType === "audio_tts";
+      if (isAudio && playbackUrl) {
+        audioPlayer.src = playbackUrl;
+        audioPlayer.load();
+        audioPreview.style.display = "block";
+      } else {
+        audioPlayer.removeAttribute("src");
+        audioPlayer.load();
+        audioPreview.style.display = "none";
+      }
+    }
     resultEl.style.display = "block";
-    statusEl.textContent = "Generated successfully.";
+    statusEl.textContent = assetType === "audio_synthetic"
+      ? ("Generated " + (body.frequency != null ? body.frequency : 440) + " Hz tone successfully.")
+      : (assetType === "audio_tts" && Array.isArray(data.effects_applied) && data.effects_applied.length
+        ? ("Generated with effects: " + data.effects_applied.join(", ") + ".")
+        : (data.warning || "Generated successfully."));
     statusEl.className = "message";
     statusEl.style.display = "block";
     loadPayloadsList();
+    loadDocuments();
   } catch (err) {
     statusEl.textContent = err.message || "Network error";
     statusEl.className = "message error";
@@ -1252,7 +1673,8 @@ async function loadModelDefault() {
 (async function init() {
   const session = await getSession();
   updateSessionUI(session);
-  if (!document.querySelector("#main_body .panel.active")) showPanel("direct");
+  if (!document.querySelector("#main_body .panel.active")) showPanel(DEFAULT_PANEL);
   loadDocuments();
+  loadPayloadsList();
   loadModelDefault();
 })();

@@ -18,7 +18,18 @@ except ImportError:
 DEFAULT_MODEL = "ollama:llama3.2"
 # Agentic panel: thinking model (e.g. qwen3:0.6b) for CoT visibility; override with AGENTIC_MODEL
 AGENTIC_MODEL = "qwen3:0.6b"
-OLLAMA_HOST = "http://localhost:11434"  # override with env OLLAMA_HOST
+# Document Injection vision path: image files sent directly to a VLM; override with VISION_MODEL
+VISION_MODEL = "ollama:qwen2.5vl:7b"
+# Document Injection audio extract path: local Whisper via faster-whisper; override with WHISPER_MODEL
+WHISPER_MODEL = "base"
+WHISPER_DEVICE = "cpu"
+WHISPER_COMPUTE_TYPE = "int8"
+WHISPER_NO_SPEECH_THRESHOLD = 0.35
+WHISPER_GAIN_BOOST_DB = 15
+WHISPER_MULTI_PASS = True
+# Web Injection: use Playwright headless browser for JS-rendered pages (requires playwright + chromium)
+WEB_FETCH_JS = False
+OLLAMA_HOST = "http://localhost:11480"  # override with env OLLAMA_HOST
 # Runner and Docker: base URL and port from .env (no hardcoded localhost in code)
 REDTEAM_API_URL_DEFAULT = "http://127.0.0.1:5000"
 PORT_DEFAULT = 5000
@@ -131,6 +142,76 @@ def get_agentic_model_id() -> str:
     """Model for Agentic panel (thinking/CoT). From .env AGENTIC_MODEL; default qwen3:0.6b."""
     _ensure_env_loaded()
     return os.getenv("AGENTIC_MODEL", AGENTIC_MODEL).strip() or AGENTIC_MODEL
+
+
+def get_vision_model_id() -> str:
+    """Model for Document Injection vision mode (image bytes to VLM). From .env VISION_MODEL."""
+    _ensure_env_loaded()
+    return os.getenv("VISION_MODEL", VISION_MODEL).strip() or VISION_MODEL
+
+
+def get_whisper_model_name() -> str:
+    """Whisper model size/name for audio transcription (faster-whisper). From .env WHISPER_MODEL."""
+    _ensure_env_loaded()
+    return os.getenv("WHISPER_MODEL", WHISPER_MODEL).strip() or WHISPER_MODEL
+
+
+def get_whisper_device() -> str:
+    """Device for faster-whisper: cpu or cuda. From .env WHISPER_DEVICE."""
+    _ensure_env_loaded()
+    return os.getenv("WHISPER_DEVICE", WHISPER_DEVICE).strip() or WHISPER_DEVICE
+
+
+def get_whisper_compute_type() -> str:
+    """Compute type for faster-whisper (e.g. int8, float16). From .env WHISPER_COMPUTE_TYPE."""
+    _ensure_env_loaded()
+    return os.getenv("WHISPER_COMPUTE_TYPE", WHISPER_COMPUTE_TYPE).strip() or WHISPER_COMPUTE_TYPE
+
+
+def get_whisper_vad_filter() -> bool:
+    """When True, Whisper VAD skips non-speech — can drop quiet overlay tracks. Default off for red-team audio."""
+    _ensure_env_loaded()
+    val = os.getenv("WHISPER_VAD_FILTER", "false").strip().lower()
+    return val in ("1", "true", "yes")
+
+
+def whisper_google_fallback_enabled() -> bool:
+    """When True, fall back to Google Web Speech if Whisper fails. From .env WHISPER_FALLBACK_GOOGLE."""
+    _ensure_env_loaded()
+    val = os.getenv("WHISPER_FALLBACK_GOOGLE", "false").strip().lower()
+    return val in ("1", "true", "yes")
+
+
+def get_whisper_no_speech_threshold() -> float:
+    """Lower values make Whisper more sensitive to quiet speech. From .env WHISPER_NO_SPEECH_THRESHOLD."""
+    _ensure_env_loaded()
+    try:
+        return float(os.getenv("WHISPER_NO_SPEECH_THRESHOLD", str(WHISPER_NO_SPEECH_THRESHOLD)))
+    except ValueError:
+        return WHISPER_NO_SPEECH_THRESHOLD
+
+
+def get_whisper_gain_boost_db() -> float:
+    """Extra gain (dB) for a second Whisper pass to capture quiet overlay tracks."""
+    _ensure_env_loaded()
+    try:
+        return float(os.getenv("WHISPER_GAIN_BOOST_DB", str(WHISPER_GAIN_BOOST_DB)))
+    except ValueError:
+        return WHISPER_GAIN_BOOST_DB
+
+
+def get_whisper_multi_pass() -> bool:
+    """When True, run Whisper on normalized and gain-boosted variants and merge results."""
+    _ensure_env_loaded()
+    val = os.getenv("WHISPER_MULTI_PASS", "true" if WHISPER_MULTI_PASS else "false").strip().lower()
+    return val in ("1", "true", "yes")
+
+
+def get_web_fetch_js() -> bool:
+    """When True, fetch URLs with Playwright (headless Chromium) instead of HTTP-only."""
+    _ensure_env_loaded()
+    val = os.getenv("WEB_FETCH_JS", "true" if WEB_FETCH_JS else "false").strip().lower()
+    return val in ("1", "true", "yes")
 
 
 def get_ollama_host() -> str:

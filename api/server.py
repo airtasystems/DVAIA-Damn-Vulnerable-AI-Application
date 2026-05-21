@@ -4,17 +4,20 @@ Load .env via python -m api (api/__main__.py). PORT, DEFAULT_MODEL, OLLAMA_HOST.
 """
 import os
 import tempfile
+import mimetypes
+import time
 from pathlib import Path
 
 from flask import Flask, request, jsonify, render_template, session, send_from_directory
 
-from core.config import get_agentic_model_id, get_default_model_id
+from core.config import get_agentic_model_id, get_default_model_id, get_vision_model_id, get_whisper_model_name
 
 from app import agent as app_agent
 from app import auth as app_auth
 from app import chat as app_chat
 from app import db as app_db
 from app import documents as app_documents
+from app import fetch as app_fetch
 from app import mfa as app_mfa
 from app import retrieval as app_retrieval
 from app.config import get_secret_key
@@ -24,6 +27,19 @@ ROOT = Path(__file__).resolve().parent.parent
 
 app = Flask(__name__, template_folder="templates")
 app.config["SECRET_KEY"] = get_secret_key()
+
+
+@app.context_processor
+def inject_static_version():
+    """Cache-bust static assets when JS/CSS change (volume-mounted dev setups)."""
+    static_root = Path(__file__).resolve().parent / "static"
+    versions = {}
+    for rel in ("js/main.js", "css/style.css"):
+        try:
+            versions[rel.replace("/", "_").replace(".", "_")] = int((static_root / rel).stat().st_mtime)
+        except OSError:
+            versions[rel.replace("/", "_").replace(".", "_")] = 0
+    return {"static_version": max(versions.values()), "static_versions": versions}
 
 # Initialize DB on first use (call once at startup)
 _initialized = False
@@ -62,6 +78,9 @@ def api_models():
     return jsonify({
         "default": _default_model(),
         "agentic_model": get_agentic_model_id(),
+        "vision_model": get_vision_model_id(),
+        "whisper_model": get_whisper_model_name(),
+        "transcription_backend": "whisper",
         "format": "Use 'model_id' in POST body. Ollama local models: prefix with 'ollama:' (e.g. ollama:llama3.2) or use model name directly",
         "examples": ["ollama:llama3.2", "llama3.2", "ollama:llama3.1"],
     })
@@ -75,7 +94,8 @@ def api_chat():
     - messages: optional list of {role, content} for multi-turn; if set, used instead of prompt.
     - model_id: optional.
     - options: optional dict for generation (max_tokens, num_predict) to cap output length.
-    - context_from, document_id, url, rag_query: for indirect-injection tests.
+    - context_from, document_id, payload_relative_path, context_mode, url, rag_query, rag_source: for indirect-injection tests.
+    - context_mode: "extract" (default, OCR/PDF/STT text) or "vision" (image bytes to VISION_MODEL).
     """
     _ensure_db()
     data = request.get_json() or {}
@@ -84,25 +104,45 @@ def api_chat():
     model_id = data.get("model_id") or _default_model()
     options = data.get("options")
     context_from = data.get("context_from")
+    context_mode = (data.get("context_mode") or "extract").strip().lower()
     document_id = data.get("document_id")
+    payload_relative_path = (data.get("payload_relative_path") or data.get("payload_path") or "").strip() or None
     url = data.get("url")
     rag_query = data.get("rag_query")
+    rag_source = (data.get("rag_source") or "").strip() or None
     if not prompt and not messages:
         return jsonify({"error": "Missing 'prompt' (or 'message') / 'messages' in body"}), 400
     user_id = _user_id_from_session()
     try:
+        started = time.perf_counter()
         res = app_chat.handle_chat(
             prompt=prompt,
             user_id=user_id,
             model_id=model_id,
             context_from=context_from,
+            context_mode=context_mode,
             document_id=document_id,
+            payload_relative_path=payload_relative_path,
             url=url,
             rag_query=rag_query,
+            rag_source=rag_source,
             options=options,
             messages=messages,
         )
-        return jsonify({"response": res["text"], "thinking": res.get("thinking", "")})
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return jsonify({
+            "response": res["text"],
+            "thinking": res.get("thinking", ""),
+            "context_extracted": res.get("context_extracted"),
+            "context_warning": res.get("context_warning"),
+            "context_mode": res.get("context_mode"),
+            "vision_model": res.get("vision_model"),
+            "transcription_backend": res.get("transcription_backend"),
+            "whisper_model": res.get("whisper_model"),
+            "rag_source_filter": res.get("rag_source_filter"),
+            "rag_chunk_count": res.get("rag_chunk_count"),
+            "duration_ms": duration_ms,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -279,11 +319,116 @@ def api_documents_upload():
 
 @app.route("/api/documents", methods=["GET"])
 def api_documents_list():
-    """List documents for current user (or all if unauthenticated)."""
+    """List uploaded documents and generated payload files for document injection."""
     _ensure_db()
     user_id = _user_id_from_session()
     docs = app_documents.list_documents(user_id)
-    return jsonify({"documents": [{"id": d["id"], "filename": d["filename"], "created_at": d["created_at"]} for d in docs]})
+    payload_files = app_documents.list_payload_files()
+    return jsonify({
+        "documents": [
+            {"id": d["id"], "filename": d["filename"], "created_at": d["created_at"]}
+            for d in docs
+        ],
+        "payload_files": payload_files,
+    })
+
+
+@app.route("/api/documents/extract-preview", methods=["GET"])
+def api_documents_extract_preview():
+    """Preview extracted text for an uploaded document or generated payload file."""
+    _ensure_db()
+    user_id = _user_id_from_session()
+    document_id = request.args.get("document_id", type=int)
+    payload_relative_path = (request.args.get("payload_relative_path") or "").strip() or None
+    if document_id is not None:
+        doc = app_documents.get_document(document_id, user_id)
+        if not doc:
+            return jsonify({"error": "Document not found"}), 404
+        file_path = doc.get("file_path")
+        if not file_path:
+            return jsonify({"error": "Document file missing on disk"}), 404
+        preview = app_documents.extract_file_preview(file_path)
+        return jsonify({
+            "source": doc.get("filename") or f"document_{document_id}",
+            **preview,
+            "whisper_model": get_whisper_model_name() if preview.get("transcription_backend") else None,
+        })
+    if payload_relative_path:
+        path = app_documents.resolve_payload_path(payload_relative_path)
+        if path is None:
+            return jsonify({"error": "Payload file not found"}), 404
+        preview = app_documents.extract_file_preview(str(path))
+        return jsonify({
+            "source": payload_relative_path,
+            **preview,
+            "whisper_model": get_whisper_model_name() if preview.get("transcription_backend") else None,
+        })
+    return jsonify({"error": "Provide document_id or payload_relative_path"}), 400
+
+
+@app.route("/api/web/fetch-preview", methods=["GET"])
+def api_web_fetch_preview():
+    """Preview fetched/extracted text for a URL (Web Injection)."""
+    url = (request.args.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "Provide url query parameter"}), 400
+    if not url.startswith(("http://", "https://")):
+        return jsonify({"error": "URL must be http or https (use absolute URL)"}), 400
+    try:
+        page = app_fetch.fetch_page_context(url, timeout=20)
+        preview = (page.get("context_text") or "")[:2000]
+        return jsonify({
+            "url": url,
+            "title": page.get("title") or "",
+            "meta_description": page.get("meta_description") or "",
+            "visible_text": page.get("visible_text") or "",
+            "hidden_text": page.get("hidden_text") or "",
+            "text": page.get("context_text") or "",
+            "preview": preview,
+            "chars": page.get("chars") or 0,
+            "fetch_backend": page.get("fetch_backend"),
+            "extractor": page.get("extractor"),
+            "fetch_ms": page.get("fetch_ms"),
+            "extraction_ms": page.get("extraction_ms"),
+            "warning": page.get("warning"),
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+def _send_local_file(path: Path, *, inline: bool = False):
+    """Serve a file from disk; inline=True sets MIME type for browser playback."""
+    response = send_from_directory(
+        str(path.parent),
+        path.name,
+        as_attachment=not inline,
+        download_name=path.name,
+    )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    if inline:
+        guessed, _ = mimetypes.guess_type(path.name)
+        if guessed:
+            response.headers["Content-Type"] = guessed
+    return response
+
+
+@app.route("/api/documents/file/<int:document_id>", methods=["GET"])
+def api_documents_file(document_id):
+    """Serve an uploaded document file (inline playback for audio/images)."""
+    _ensure_db()
+    user_id = _user_id_from_session()
+    doc = app_documents.get_document(document_id, user_id)
+    if not doc:
+        return jsonify({"error": "Document not found"}), 404
+    file_path = doc.get("file_path")
+    if not file_path:
+        return jsonify({"error": "Document file missing on disk"}), 404
+    path = Path(file_path).resolve()
+    if not path.is_file():
+        return jsonify({"error": "Document file missing on disk"}), 404
+    inline = request.args.get("inline", "").strip().lower() in ("1", "true", "yes")
+    return _send_local_file(path, inline=inline)
 
 
 @app.route("/api/documents/<int:document_id>", methods=["GET"])
@@ -312,6 +457,45 @@ def api_documents_delete(document_id):
     if not app_documents.delete_document(document_id, user_id):
         return jsonify({"error": "Not found"}), 404
     return jsonify({"ok": True})
+
+
+@app.route("/api/rag/retrieve-preview", methods=["GET"])
+def api_rag_retrieve_preview():
+    """Preview semantic retrieval before RAG chat. Query params: q, optional rag_source."""
+    _ensure_db()
+    q = (request.args.get("q") or "").strip()
+    rag_source = (request.args.get("rag_source") or "").strip() or None
+    if not q:
+        return jsonify({
+            "chunks": [],
+            "formatted_preview": "",
+            "rag_source": rag_source,
+            "warning": "Enter a query to preview retrieval.",
+            "sources": app_retrieval.list_sources(),
+        })
+    hits = app_retrieval.search_diverse_hits(q, source_filter=rag_source)
+    formatted = app_retrieval.format_chunks_for_prompt(hits)
+    warning = None
+    if rag_source and not hits:
+        sources = app_retrieval.list_sources()
+        warning = (
+            f"No chunks matched for source '{rag_source}'. "
+            f"Indexed sources: {', '.join(sources) if sources else '(none)'}"
+        )
+    return jsonify({
+        "chunks": [
+            {
+                "source": h.get("source"),
+                "content": h.get("content"),
+                "score": h.get("score"),
+            }
+            for h in hits
+        ],
+        "formatted_preview": formatted,
+        "rag_source": rag_source,
+        "warning": warning,
+        "sources": app_retrieval.list_sources() if not hits else None,
+    })
 
 
 @app.route("/api/rag/search", methods=["GET"])
@@ -369,6 +553,26 @@ def api_rag_add_document(document_id):
     })
 
 
+@app.route("/api/rag/add-payload", methods=["POST"])
+def api_rag_add_payload():
+    """Add a generated payload file to RAG by relative path under PAYLOADS_OUTPUT_DIR."""
+    _ensure_db()
+    data = request.get_json() or {}
+    relative_path = (data.get("payload_relative_path") or data.get("payload_path") or "").strip()
+    if not relative_path:
+        return jsonify({"error": "Missing payload_relative_path"}), 400
+    text = app_documents.extract_payload_text(relative_path).strip()
+    if not text:
+        return jsonify({"error": "Payload file not found or has no extracted text."}), 400
+    source = relative_path.replace("\\", "/")
+    chunks_added = app_retrieval.add_document(source, text)
+    return jsonify({
+        "chunks_added": chunks_added,
+        "source": source,
+        "content_length": len(text),
+    })
+
+
 @app.route("/api/rag/delete-by-source", methods=["POST"])
 def api_rag_delete_by_source():
     """Delete all RAG chunks with the given source. Body: source (string). Requires authenticated session."""
@@ -414,6 +618,20 @@ def _parse_bool(value):
         return value
     s = str(value).strip().lower()
     return s in ("true", "1", "yes", "on")
+
+
+def _parse_float_param(data, key, default=0.0, minimum=None, maximum=None):
+    """Parse a numeric request field with optional clamping."""
+    raw = data.get(key, default)
+    try:
+        value = float(default if raw is None or raw == "" else raw)
+    except (TypeError, ValueError):
+        value = float(default)
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
 
 
 def _payloads_generate_data():
@@ -598,10 +816,57 @@ def api_payloads_generate():
             ch = data.get("composite_height")
             path = payloads.generate_qr(payload=payload, filename=data.get("filename"), subdir=data.get("subdir", "images"), composite_width=int(cw) if cw is not None else None, composite_height=int(ch) if ch is not None else None)
         elif asset_type == "audio_synthetic":
-            path = payloads.generate_audio_synthetic(duration_sec=float(data.get("duration_sec") or 1.0), frequency=float(data.get("frequency") or 440.0), filename=data.get("filename"), subdir=data.get("subdir", "audio"))
+            frequency = float(data.get("frequency") or 440.0)
+            duration_sec = float(data.get("duration_sec") or 1.0)
+            filename = (data.get("filename") or "").strip() or None
+            if not filename:
+                filename = f"tone_{int(round(frequency))}hz.wav"
+            path = payloads.generate_audio_synthetic(
+                duration_sec=duration_sec,
+                frequency=frequency,
+                filename=filename,
+                subdir=data.get("subdir", "audio"),
+            )
         elif asset_type == "audio_tts":
             text = (data.get("text") or data.get("content") or "").strip() or "Hello world."
-            path = payloads.generate_audio_tts(text=text, filename=data.get("filename"), subdir=data.get("subdir", "audio"))
+            overlay_text = (data.get("overlay_text") or "").strip() or None
+            tts_kwargs = dict(
+                text=text,
+                filename=data.get("filename"),
+                subdir=data.get("subdir", "audio"),
+                lang=(data.get("lang") or "en").strip() or "en",
+                noise_level=_parse_float_param(data, "noise_level", 0.0, 0.0, 1.0),
+                background_tone_hz=_parse_float_param(data, "background_tone_hz", 0.0, 0.0, 20000.0),
+                background_tone_level=_parse_float_param(data, "background_tone_level", 0.2, 0.0, 1.0),
+                pitch_semitones=_parse_float_param(data, "pitch_semitones", 0.0, -12.0, 12.0),
+                speed_factor=_parse_float_param(data, "speed_factor", 1.0, 0.5, 2.0),
+                echo_delay_ms=_parse_float_param(data, "echo_delay_ms", 0.0, 0.0, 1000.0),
+                echo_decay=_parse_float_param(data, "echo_decay", 0.4, 0.0, 1.0),
+                distortion=_parse_float_param(data, "distortion", 0.0, 0.0, 1.0),
+                gain_db=_parse_float_param(data, "gain_db", 0.0, -20.0, 20.0),
+                low_pass_hz=_parse_float_param(data, "low_pass_hz", 0.0, 0.0, 20000.0),
+                high_pass_hz=_parse_float_param(data, "high_pass_hz", 0.0, 0.0, 20000.0),
+                overlay_text=overlay_text,
+                overlay_level=_parse_float_param(data, "overlay_level", 0.15, 0.0, 1.0),
+            )
+            from payloads.audio import describe_tts_effects
+
+            effects_applied = describe_tts_effects(
+                noise_level=tts_kwargs["noise_level"],
+                background_tone_hz=tts_kwargs["background_tone_hz"],
+                background_tone_level=tts_kwargs["background_tone_level"],
+                pitch_semitones=tts_kwargs["pitch_semitones"],
+                speed_factor=tts_kwargs["speed_factor"],
+                echo_delay_ms=tts_kwargs["echo_delay_ms"],
+                echo_decay=tts_kwargs["echo_decay"],
+                distortion=tts_kwargs["distortion"],
+                gain_db=tts_kwargs["gain_db"],
+                low_pass_hz=tts_kwargs["low_pass_hz"],
+                high_pass_hz=tts_kwargs["high_pass_hz"],
+                overlay_text=overlay_text,
+                overlay_level=tts_kwargs["overlay_level"],
+            )
+            path = payloads.generate_audio_tts(**tts_kwargs)
         else:
             return jsonify({"error": f"Unknown asset_type: {asset_type}"}), 400
         if path is None:
@@ -610,7 +875,15 @@ def api_payloads_generate():
         if not path.is_file():
             return jsonify({"error": "Generated file not found"}), 500
         relative_path = _payloads_relative_path(path)
-        return jsonify({"path": str(path), "relative_path": relative_path})
+        response = {"path": str(path), "relative_path": relative_path}
+        if asset_type == "audio_tts":
+            response["effects_applied"] = effects_applied
+        if path.suffix.lower() == ".mp3":
+            response["warning"] = (
+                "Saved as MP3 because ffmpeg is unavailable for WAV conversion. "
+                "Install ffmpeg on PATH for WAV output."
+            )
+        return jsonify(response)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -629,7 +902,13 @@ def api_payloads_list():
                 rel_str = str(rel).replace("\\", "/")
                 if ".." in rel_str or rel_str.startswith("/"):
                     continue
-                files.append({"name": p.name, "relative_path": rel_str, "size": p.stat().st_size})
+                stat = p.stat()
+                files.append({
+                    "name": p.name,
+                    "relative_path": rel_str,
+                    "size": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                })
             except ValueError:
                 continue
     files.sort(key=lambda x: (x["relative_path"],))
@@ -650,7 +929,8 @@ def api_payloads_file(relative_path):
         full.relative_to(out_dir)
     except ValueError:
         return jsonify({"error": "Invalid path"}), 400
-    return send_from_directory(str(full.parent), full.name, as_attachment=True, download_name=full.name)
+    inline = request.args.get("inline", "").strip().lower() in ("1", "true", "yes")
+    return _send_local_file(full, inline=inline)
 
 
 def run_app():

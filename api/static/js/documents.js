@@ -1,16 +1,56 @@
+function appendSelectSectionHeader(select, label) {
+  const header = document.createElement("option");
+  header.disabled = true;
+  header.textContent = label;
+  header.value = "";
+  select.appendChild(header);
+}
+
+function populateDocumentSelect(selectId, data) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  sel.innerHTML = '<option value="">-- Select a document --</option>';
+  const uploaded = data.documents || [];
+  const payloads = data.payload_files || [];
+  if (uploaded.length) {
+    appendSelectSectionHeader(sel, "Uploaded documents");
+    uploaded.forEach(d => {
+      const opt = document.createElement("option");
+      opt.value = String(d.id);
+      opt.textContent = d.filename + " (id " + d.id + ")";
+      sel.appendChild(opt);
+    });
+  }
+  if (payloads.length) {
+    appendSelectSectionHeader(sel, "Generated payloads");
+    payloads.forEach(f => {
+      const rel = f.relative_path || f.name;
+      const opt = document.createElement("option");
+      opt.value = "payload:" + rel;
+      opt.textContent = rel + (f.size != null ? " (" + f.size + " B)" : "");
+      sel.appendChild(opt);
+    });
+  }
+}
+
+function parseDocumentSelection(value) {
+  if (!value) return null;
+  if (value.startsWith("payload:")) {
+    return {
+      context_from: "payload",
+      payload_relative_path: value.slice("payload:".length),
+    };
+  }
+  const documentId = parseInt(value, 10);
+  if (!Number.isFinite(documentId)) return null;
+  return { context_from: "upload", document_id: documentId };
+}
+
 async function loadDocuments() {
   const r = await fetch(API + "/documents", { credentials: "include" });
   const data = await r.json().catch(() => ({}));
-  const sel = document.getElementById("doc_select");
-  const first = sel.options[0];
-  sel.innerHTML = "";
-  sel.appendChild(first);
-  (data.documents || []).forEach(d => {
-    const opt = document.createElement("option");
-    opt.value = d.id;
-    opt.textContent = d.filename + " (id " + d.id + ")";
-    sel.appendChild(opt);
-  });
+  populateDocumentSelect("doc_select", data);
+  populateDocumentSelect("rag_doc_select", data);
 }
 
 document.getElementById("btn_upload").addEventListener("click", async () => {
@@ -39,16 +79,17 @@ document.getElementById("btn_upload").addEventListener("click", async () => {
 });
 
 document.getElementById("send_document").addEventListener("click", async () => {
-  const docId = document.getElementById("doc_select").value;
+  const selected = document.getElementById("doc_select").value;
   const prompt = document.getElementById("prompt_document").value.trim();
   if (!prompt) return;
-  if (!docId) {
-    setOutput("output_document", "Select a document first.", "error");
+  const selection = parseDocumentSelection(selected);
+  if (!selection) {
+    setOutput("output_document", "Select a document or generated payload first.", "error");
     return;
   }
   setLoading("output_document", "send_document", true);
   try {
-    const body = { prompt, context_from: "upload", document_id: parseInt(docId, 10) };
+    const body = { prompt, ...selection };
     const r = await fetch(API + "/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -71,3 +112,4 @@ document.getElementById("send_document").addEventListener("click", async () => {
   } finally {
     setLoading("output_document", "send_document", false);
   }
+});

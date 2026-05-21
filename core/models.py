@@ -7,8 +7,11 @@ model_id format:
 """
 from __future__ import annotations
 
+import base64
+import mimetypes
 import warnings
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 # Suppress LangChain/Pydantic v1 warning on Python 3.14+ (before first langchain import)
 warnings.filterwarnings(
@@ -71,6 +74,64 @@ def _messages_to_lc(messages: List[Dict[str, str]]) -> List[BaseMessage]:
         else:
             lc.append(HumanMessage(content=content))
     return lc
+
+
+def _image_mime_type(path: Path) -> str:
+    mime, _ = mimetypes.guess_type(str(path))
+    if mime and mime.startswith("image/"):
+        return mime
+    suffix = path.suffix.lower()
+    mapping = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".tif": "image/tiff",
+        ".tiff": "image/tiff",
+    }
+    return mapping.get(suffix, "image/png")
+
+
+def _encode_image_data_url(path: Path) -> str:
+    data = path.read_bytes()
+    encoded = base64.b64encode(data).decode("ascii")
+    mime = _image_mime_type(path)
+    return f"data:{mime};base64,{encoded}"
+
+
+def generate_with_images(
+    prompt: str,
+    image_paths: List[Union[str, Path]],
+    model_id: Optional[str] = DEFAULT_MODEL,
+    options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """
+    Send prompt plus one or more local image files to a vision-capable Ollama model.
+    Returns {"text": str, "thinking": ""}.
+    """
+    model_id = model_id or DEFAULT_MODEL
+    llm_kwargs = _options_to_llm_kwargs(options)
+    llm = get_llm(model_id, **llm_kwargs)
+
+    content: List[Dict[str, str]] = [{"type": "text", "text": prompt or ""}]
+    for raw_path in image_paths:
+        path = Path(raw_path)
+        if not path.is_file():
+            continue
+        content.append({
+            "type": "image_url",
+            "image_url": _encode_image_data_url(path),
+        })
+
+    if len(content) == 1:
+        return {"text": "No valid image files provided.", "thinking": ""}
+
+    msg = llm.invoke([HumanMessage(content=content)])
+    text = getattr(msg, "content", None) or ""
+    text = (text if isinstance(text, str) else "").strip() or "No text returned."
+    return {"text": text, "thinking": ""}
 
 
 def generate(

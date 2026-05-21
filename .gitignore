@@ -22,6 +22,11 @@ ENV/
 *.swo
 *~
 
+# Cache
+.cache/
+.huggingface/
+__pycache__/
+
 # OS
 .DS_Store
 Thumbs.db

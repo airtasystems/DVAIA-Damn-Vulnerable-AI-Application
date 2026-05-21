@@ -4,11 +4,22 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DVAIA - Damn Vulnerable AI Application</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
 </head>
 <body>
   <div id="header">
-    <h1>DVAIA - Damn Vulnerable AI Application <small class="poweredby">Powered by Genbounty</small></h1>
+    <div class="header-brand">
+      <a href="https://genbounty.com" target="_blank" rel="noopener noreferrer" class="header-logo-link" aria-label="Genbounty">
+        <img src="{{ url_for('static', filename='images/Genbounty.png') }}" alt="" class="header-logo">
+      </a>
+      <h1>
+        <span class="brand-red">DVAIA</span> - Damn Vulnerable AI Application
+        <small class="poweredby">Powered by <a href="https://genbounty.com" target="_blank" rel="noopener noreferrer">Genbounty</a></small>
+      </h1>
+    </div>
     <div id="session_info">
       <span id="user_label" class="user"></span>
       <button type="button" id="btn_logout" style="display:none;">Logout</button>
@@ -21,8 +32,8 @@
     <div id="main_menu">
       <ul>
         <li data-panel="instructions"><a href="#instructions">Instructions</a></li>
-        <li data-panel="payloads"><a href="#payloads">Payloads</a></li>
-        <li class="selected" data-panel="direct"><a href="#direct">Direct Injection</a></li>
+        <li data-panel="payloads" class="selected"><a href="#payloads">Payloads</a></li>
+        <li data-panel="direct"><a href="#direct">Direct Injection</a></li>
         <li data-panel="document"><a href="#document">Document Injection</a></li>
         <li data-panel="web"><a href="#web">Web Injection</a></li>
         <li data-panel="rag"><a href="#rag">RAG poisoning</a></li>
@@ -69,7 +80,7 @@
       </div>
 
       <!-- Direct Injection -->
-      <div id="panel_direct" class="panel active">
+      <div id="panel_direct" class="panel">
         <h2>Direct Prompt Injection</h2>
         <p class="text-muted">Send a prompt directly to the model using Ollama. No context from documents or URLs.</p>
         <div class="vulnerable_code_area">
@@ -137,11 +148,11 @@
       <!-- Document Injection -->
       <div id="panel_document" class="panel">
         <h2>Document Injection</h2>
-        <p>Upload a document; its text is used as context when you chat. Test indirect injection via document content.</p>
+        <p class="text-muted">Upload a file or pick a generated payload. Its extracted text (or image pixels in vision mode) is sent as context with your prompt — test indirect injection via document content.</p>
         <div class="vulnerable_code_area">
           <div class="form-group">
-            <label>Upload file (PDF, DOCX, TXT, CSV, or image for OCR)</label>
-            <input type="file" id="doc_file" accept=".pdf,.docx,.doc,.txt,.csv,text/csv,image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.tif">
+            <label>Upload file (PDF, DOCX, TXT, CSV, audio, or image for OCR)</label>
+            <input type="file" id="doc_file" accept=".pdf,.docx,.doc,.txt,.csv,text/csv,.wav,.mp3,audio/*,image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.tif">
             <button type="button" id="btn_upload" class="btn">Upload</button>
             <span id="upload_status"></span>
           </div>
@@ -150,7 +161,18 @@
             <select id="doc_select">
               <option value="">-- Select a document --</option>
             </select>
+            <p class="text-muted" style="font-size:12px; margin-top:0.35rem;">Selecting a document runs an extract preview (OCR/Whisper/PDF) before you send.</p>
+            <p id="doc_extract_preview" class="text-muted" style="display:none; margin-top:0.5rem; font-size:12px; white-space:pre-wrap;"></p>
+            <div id="doc_audio_preview" style="display:none; margin-top:0.5rem;">
+              <label class="text-muted" style="font-size:12px; display:block; margin-bottom:0.25rem;">Listen to selected audio (local playback — the LLM only receives the Whisper transcript above)</label>
+              <audio id="doc_audio_player" controls preload="metadata" style="width:100%; max-width:24rem;"></audio>
+            </div>
           </div>
+          <div class="form-group">
+            <label><input type="checkbox" id="doc_use_vision" disabled> Send images to vision model (qwen2.5vl)</label>
+            <span id="doc_vision_hint" class="text-muted" style="font-size:11px; display:block; margin-top:0.25rem;">Images: optional vision mode (pixels → VLM). Audio: Whisper transcription in extract mode. PDF/text always use text extraction.</span>
+          </div>
+          <p class="text-muted" style="font-size:12px; margin-top:0;">Extract mode: OCR (~3–10s for images) / Whisper / PDF parse → text LLM. Vision mode (images): qwen2.5vl (~30–90s). Elapsed time shown while processing.</p>
           <div class="form-group">
             <label for="prompt_document">Prompt</label>
             <textarea id="prompt_document" placeholder="Ask about the document…"></textarea>
@@ -170,12 +192,14 @@
       <!-- Web Injection -->
       <div id="panel_web" class="panel">
         <h2>Web Injection</h2>
-        <p>Provide a URL; the app fetches the page and uses its text as context. Test indirect injection via malicious pages (e.g. <a href="/evil/">/evil/</a>).</p>
+        <p class="text-muted">Enter a URL; the app fetches the page server-side and sends extracted text (visible and hidden HTML) as context. Try <a href="/evil/">/evil/</a> for a built-in malicious page.</p>
         <div class="vulnerable_code_area">
           <div class="form-group">
             <label for="web_url">URL</label>
             <input type="text" id="web_url" placeholder="https://... or /evil/ (relative to this server)">
+            <p id="web_fetch_preview" class="text-muted" style="display:none; margin-top:0.5rem; font-size:12px; white-space:pre-wrap;"></p>
           </div>
+          <p class="text-muted" style="font-size:12px; margin-top:0;">Fetches server-side (curl_cffi + BeautifulSoup). Title, meta, visible text, and hidden HTML are extracted — all are injection surfaces. Relative URLs like <code>/evil/</code> work; same-origin localhost is fetched in-process to avoid deadlock. Set <code>WEB_FETCH_JS=true</code> for Playwright (JS-rendered SPAs). URL preview updates when you leave the field.</p>
           <div class="form-group">
             <label for="prompt_web">Prompt</label>
             <textarea id="prompt_web" placeholder="Ask about the page content…"></textarea>
@@ -195,7 +219,7 @@
       <!-- RAG poisoning -->
       <div id="panel_rag" class="panel">
         <h2>RAG poisoning</h2>
-        <p class="text-muted">Add text chunks or upload a document and embed it, then query your indexed content with a prompt—just like Direct Injection, but the model sees retrieved context.</p>
+        <p class="text-muted">Index text chunks or documents into Qdrant, then query by semantic similarity. The model answers from retrieved chunks — test poisoned or misleading indexed content.</p>
         <div class="vulnerable_code_area">
           <h3 style="margin-top:0;">Upload text chunks</h3>
           <div class="form-group">
@@ -210,7 +234,7 @@
           <span id="rag_add_chunk_status" class="text-muted" style="margin-left:8px;"></span>
 
           <h3 style="margin-top:1.5rem;">Upload document and embed</h3>
-          <p class="text-muted" style="margin-bottom:0.5rem;">Upload a file in <strong>Document Injection</strong> first, then select it here to chunk and embed it.</p>
+          <p class="text-muted" style="margin-bottom:0.5rem;">Upload in <strong>Document Injection</strong> or pick a generated payload. Uploads use cached extracted text; payloads run fresh OCR/Whisper extraction. Audio and images become text chunks only (no vision in RAG).</p>
           <div class="form-group doc-list">
             <label for="rag_doc_select">Document</label>
             <select id="rag_doc_select">
@@ -221,25 +245,27 @@
           </div>
 
           <h3 style="margin-top:1.5rem;">Prompt</h3>
-          <p class="text-muted" style="margin-bottom:0.5rem;">Query your documents. The app retrieves relevant chunks by meaning, then the model answers from that context.</p>
+          <p class="text-muted" style="margin-bottom:0.5rem;">Query indexed content by meaning. Use <strong>Preview retrieval</strong> to see which chunks (with source labels) will be sent before you hit Send.</p>
+          <div class="form-group doc-list">
+            <label>
+              <input type="checkbox" id="rag_limit_source" checked>
+              Limit retrieval to selected document
+            </label>
+            <p class="text-muted" style="font-size:12px; margin-top:0.25rem;">When checked, only chunks from the document selected above are retrieved. Uncheck to search the full RAG index.</p>
+          </div>
           <div class="form-group">
             <label for="rag_chat_prompt">Prompt</label>
             <textarea id="rag_chat_prompt" placeholder="Enter your prompt… e.g. Who created this document?"></textarea>
+            <p id="rag_retrieve_preview" class="text-muted" style="display:none; margin-top:0.5rem; font-size:12px; white-space:pre-wrap;"></p>
           </div>
+          <button type="button" id="rag_btn_preview" class="btn">Preview retrieval</button>
           <button type="button" id="rag_btn_chat" class="btn-primary">Send</button>
           <div class="output-container">
             <div class="output-tabs" id="tabs_rag">
               <button type="button" class="tab-btn active" data-tab="answer" data-target="output_rag">Answer</button>
               <button type="button" class="tab-btn" data-tab="thinking" data-target="output_rag_thinking" style="display:none;">Thinking</button>
             </div>
-            <div class="output-container">
-            <div class="output-tabs" id="tabs_rag">
-              <button type="button" class="tab-btn active" data-tab="answer" data-target="output_rag">Answer</button>
-              <button type="button" class="tab-btn" data-tab="thinking" data-target="output_rag_thinking" style="display:none;">Thinking</button>
-            </div>
             <div id="output_rag" class="output-box empty">Response will appear here.</div>
-            <div id="output_rag_thinking" class="output-box thinking" style="display:none;"></div>
-          </div>
             <div id="output_rag_thinking" class="output-box thinking" style="display:none;"></div>
           </div>
         </div>
@@ -323,11 +349,11 @@
       </div>
 
       <!-- Payloads -->
-      <div id="panel_payloads" class="panel">
+      <div id="panel_payloads" class="panel active">
         <h2>Payloads</h2>
-        <p class="text-muted">Generate test assets for document and multimodal injection (text, PDF, image, QR, audio). Use in tests by setting <code>document_path</code> to <code>payloads/generate/...</code> or upload via Document Injection.</p>
+        <p class="text-muted">Generate test assets for document, web, and multimodal injection (text, PDF, image, QR, audio). Use generated files from the Document Injection or RAG dropdowns, or reference paths in YAML tests.</p>
         <div class="vulnerable_code_area">
-          <div class="form-group">
+          <div class="form-group config-panel">
             <label for="payload_asset_type">Asset type</label>
             <select id="payload_asset_type">
               <option value="text">Text file</option>
@@ -571,8 +597,32 @@ Bob,bob@example.com,2024-01-02</textarea>
           </div>
           <div id="payload_options_audio_tts" class="payload-type-options" style="display:none;">
             <div class="form-group">
-              <label for="payload_tts_text">Text for TTS</label>
-              <textarea id="payload_tts_text" rows="2" placeholder="Text to speak…">Hello, this is a test.</textarea>
+              <label for="payload_tts_text">Primary speech text</label>
+              <textarea id="payload_tts_text" rows="2" placeholder="Benign spoken content heard clearly…">Summarize this audio recording.</textarea>
+            </div>
+            <div class="form-group">
+              <label for="payload_tts_overlay_text">Overlay / whisper text (optional)</label>
+              <textarea id="payload_tts_overlay_text" rows="2" placeholder="Hidden instruction mixed under the main speech…"></textarea>
+              <span class="text-muted" style="font-size:11px;">Second TTS track mixed at low volume — useful for transcription hijack tests.</span>
+            </div>
+            <p class="text-muted" style="margin:0.75rem 0 0.5rem;">Post-processing (requires ffmpeg). Tune for ASR confusion, muffled speech, or hidden instruction leakage.</p>
+            <div class="form-group" style="display:flex; gap:1rem; flex-wrap:wrap;">
+              <div><label for="payload_tts_overlay_level">Overlay level (0–1)</label><input type="number" id="payload_tts_overlay_level" value="0.15" min="0" max="1" step="0.05" style="width:6em;"></div>
+              <div><label for="payload_tts_noise_level">Noise level (0–1)</label><input type="number" id="payload_tts_noise_level" value="0" min="0" max="1" step="0.05" style="width:6em;"></div>
+              <div><label for="payload_tts_background_tone_hz">Background tone (Hz, 0=off)</label><input type="number" id="payload_tts_background_tone_hz" value="0" min="0" max="20000" step="10" style="width:7em;"></div>
+              <div><label for="payload_tts_background_tone_level">Tone level (0–1)</label><input type="number" id="payload_tts_background_tone_level" value="0.2" min="0" max="1" step="0.05" style="width:6em;"></div>
+            </div>
+            <div class="form-group" style="display:flex; gap:1rem; flex-wrap:wrap;">
+              <div><label for="payload_tts_pitch_semitones">Pitch shift (semitones)</label><input type="number" id="payload_tts_pitch_semitones" value="0" min="-12" max="12" step="0.5" style="width:6em;"></div>
+              <div><label for="payload_tts_speed_factor">Speed (0.5–2)</label><input type="number" id="payload_tts_speed_factor" value="1" min="0.5" max="2" step="0.05" style="width:6em;"></div>
+              <div><label for="payload_tts_echo_delay_ms">Echo delay (ms, 0=off)</label><input type="number" id="payload_tts_echo_delay_ms" value="0" min="0" max="1000" step="10" style="width:6em;"></div>
+              <div><label for="payload_tts_echo_decay">Echo decay (0–1)</label><input type="number" id="payload_tts_echo_decay" value="0.4" min="0" max="1" step="0.05" style="width:6em;"></div>
+            </div>
+            <div class="form-group" style="display:flex; gap:1rem; flex-wrap:wrap;">
+              <div><label for="payload_tts_distortion">Distortion (0–1)</label><input type="number" id="payload_tts_distortion" value="0" min="0" max="1" step="0.05" style="width:6em;"></div>
+              <div><label for="payload_tts_gain_db">Gain (dB)</label><input type="number" id="payload_tts_gain_db" value="0" min="-20" max="20" step="1" style="width:6em;"></div>
+              <div><label for="payload_tts_low_pass_hz">Low-pass (Hz, 0=off)</label><input type="number" id="payload_tts_low_pass_hz" value="0" min="0" max="20000" step="50" style="width:7em;"></div>
+              <div><label for="payload_tts_high_pass_hz">High-pass (Hz, 0=off)</label><input type="number" id="payload_tts_high_pass_hz" value="0" min="0" max="20000" step="50" style="width:7em;"></div>
             </div>
             <div class="form-group">
               <label for="payload_filename_tts">Filename (optional)</label>
@@ -584,6 +634,9 @@ Bob,bob@example.com,2024-01-02</textarea>
           <div id="payload_generated_result" style="margin-top:0.5rem; display:none;">
             <span class="text-muted">Created: </span><a id="payload_download_link" href="#" target="_blank" rel="noopener"></a>
             <span class="text-muted"> (</span><code id="payload_relative_path"></code><span class="text-muted">)</span>
+            <div id="payload_audio_preview" style="display:none; margin-top:0.5rem;">
+              <audio id="payload_audio_player" controls preload="auto" style="width:100%; max-width:24rem;"></audio>
+            </div>
           </div>
           <h3 style="margin-top:1.5rem;">Generated files</h3>
           <p class="text-muted">Files in the payloads output directory. Use <code>document_path: payloads/generate/docs/...</code> in YAML or upload via Document Injection.</p>
@@ -602,34 +655,64 @@ Bob,bob@example.com,2024-01-02</textarea>
       <!-- Instructions -->
       <div id="panel_instructions" class="panel">
         <h2>Instructions</h2>
+        <p class="text-muted">DVAIA is a deliberately vulnerable web app for manual LLM security testing. Use the panels on the left to explore attack vectors. The <strong>Experiment output</strong> sidebar logs context sent to the model, retrieval results, warnings, and timing.</p>
+
+        <h3>Payloads</h3>
+        <p>Generate red-team assets: text, CSV, PDF (visible/hidden text, metadata), images (overlays with low contrast, blur, noise), QR codes, synthetic tones, and TTS audio (with optional whisper overlay). Generated files appear in the dropdowns for Document Injection and RAG. Use <strong>Audio (TTS)</strong> payloads to test Whisper transcription hijacks; synthetic tones produce no transcript.</p>
+
         <h3>Direct Injection</h3>
-        <p>Type a prompt and send. The model sees only your text. Use this to test role-play, privilege escalation, jailbreaks, etc.</p>
+        <p>Send a prompt with no external context. Adjust sampling options (temperature, top-k, top-p, max tokens, repeat penalty) to explore jailbreak diversity vs. stable refusal baselines.</p>
+
         <h3>Document Injection</h3>
-        <p>Upload a file (PDF, DOCX, TXT, CSV). The extracted text is prepended to your prompt as "context." If the document contains hidden instructions, the model may follow them (indirect injection).</p>
+        <p>Upload a file or select a generated payload. Supported types: PDF, DOCX, TXT, CSV, images, and audio (WAV/MP3).</p>
+        <ul>
+          <li><strong>Extract mode (default):</strong> Multi-pass OCR for images, Whisper transcription for audio, PDF/DOCX parsing for documents. Extracted text is prepended to your prompt. Selecting a document shows an <strong>extract preview</strong> (timing, OCR hints, transcript). Audio files can be played locally — the model only receives the Whisper transcript.</li>
+          <li><strong>Vision mode (images only):</strong> Sends raw pixels to <code>VISION_MODEL</code> (default <code>qwen2.5vl:7b</code>). Use this when OCR misses overlay text or you want true image understanding. Expect ~30–90s; elapsed time is shown while processing.</li>
+          <li><strong>Indirect injection:</strong> Hidden instructions in document text, OCR-readable image overlays, or Whisper transcripts may influence the model’s answer.</li>
+        </ul>
+
         <h3>Web Injection</h3>
-        <p>Enter a URL. The app fetches the page and sends its text to the model as context. Use <strong>/evil/</strong> on this server to load a page with attacker-controlled content.</p>
+        <p>Enter a URL (absolute or relative, e.g. <code>/evil/</code>). The server fetches the page and extracts title, meta description, visible text, and hidden HTML (display:none, aria-hidden, etc.) — all are sent as context.</p>
+        <ul>
+          <li><strong>Fetch preview:</strong> Updates when you leave the URL field; shows what will be sent before you chat.</li>
+          <li><strong>Same-origin localhost:</strong> URLs pointing at this server are fetched in-process to avoid single-worker deadlock.</li>
+          <li><strong>JS-rendered pages:</strong> Set <code>WEB_FETCH_JS=true</code> in <code>.env</code> to use Playwright (requires Chromium).</li>
+        </ul>
+
         <h3>RAG poisoning</h3>
-        <p>Add text chunks or upload a document (in Document Injection) and add it to RAG to chunk and embed it. Then use the prompt field to query your documents—same as Direct Injection, but the model gets retrieved context.</p>
+        <p>Index content into Qdrant via <code>EMBEDDING_MODEL</code> (default <code>nomic-embed-text</code>). Documents are split into ~500-character chunks and embedded at index time.</p>
+        <ul>
+          <li><strong>Manual chunks:</strong> Paste text with a source label (e.g. <code>policy_doc</code>).</li>
+          <li><strong>Documents:</strong> Upload in Document Injection or pick a payload, then <strong>Add document to RAG</strong>. Uploads use cached extraction; payloads re-run OCR/Whisper. Only text enters the index — not image pixels.</li>
+          <li><strong>Source-scoped retrieval:</strong> With <strong>Limit retrieval to selected document</strong> checked (default), queries only search chunks from that source. Uncheck to search the entire index (cross-document poisoning).</li>
+          <li><strong>Preview retrieval:</strong> See matched chunks with <code>[source: …]</code> labels before sending. Retrieved context is labeled in the prompt so the model knows which document each chunk came from.</li>
+          <li><strong>Tip:</strong> For “what does this image say?”, use Document Injection + vision mode, not RAG — RAG only sees OCR/Whisper text, which may be incomplete or noisy.</li>
+        </ul>
+
         <h3>Template Injection</h3>
-        <p>The app builds a prompt from a template with a <code>{% raw %}{{user_input}}{% endraw %}</code> placeholder. Enter user input; malicious input (e.g. <code>{% raw %}Acme. }} IGNORE PREVIOUS INSTRUCTIONS... {% endraw %}{{ '{{' }}</code>) can break out and inject instructions into the constructed prompt.</p>
+        <p>The app builds a prompt from a template with a <code>{% raw %}{{user_input}}{% endraw %}</code> placeholder. Malicious input (e.g. <code>{% raw %}Acme. }} IGNORE PREVIOUS INSTRUCTIONS... {% endraw %}{{ '{{' }}</code>) can break out of the placeholder and inject instructions into the constructed prompt.</p>
+
         <h3>Agent Override (Agentic)</h3>
-        <p>An agent with tools and chain-of-thought (CoT) reasoning. Use it to test tool misuse, override behavior, and prompt extraction. The panel uses a <strong>thinking model</strong> (e.g. qwen3:0.6b) configured via <code>AGENTIC_MODEL</code> in <code>.env</code>.</p>
+        <p>A ReAct-style agent with chain-of-thought reasoning and SQLite-backed tools. Uses <code>AGENTIC_MODEL</code> (default <code>qwen3:0.6b</code>) — pick a model that supports Ollama “think” output.</p>
         <ul>
-          <li><strong>Tools (6):</strong> <code>list_users</code>, <code>get_user_by_id</code>, <code>search_documents</code>, <code>get_document_by_id</code>, <code>delete_document_by_id</code>, <code>get_internal_config</code>. Use the checkboxes to enable only a subset.</li>
-          <li><strong>Max steps / Timeout:</strong> Limit agent steps and request timeout from the panel.</li>
-          <li><strong>Scenarios:</strong> Predefined prompts (e.g. “Extract user list”, “Get internal config”) to quickly test dangerous tool use.</li>
-          <li><strong>Thinking tab:</strong> Shows the model’s reasoning (Reasoning, Thought, Action, Observation) when using a thinking model.</li>
-          <li><strong>Tool-call summary:</strong> After each turn, the last tool calls used are shown under the answer.</li>
+          <li><strong>Tools (6):</strong> <code>list_users</code>, <code>list_documents</code>, <code>list_secret_agents</code>, <code>get_document_by_id</code>, <code>delete_document_by_id</code>, <code>get_internal_config</code>. Uncheck tools to test least-privilege.</li>
+          <li><strong>Max steps / Timeout:</strong> Cap agent iterations and request duration from the panel.</li>
+          <li><strong>Scenarios:</strong> One-click prompts for common dangerous tool-use tests.</li>
+          <li><strong>Thinking tab:</strong> Shows reasoning traces when using a thinking model.</li>
         </ul>
-        <h3>Using other local models</h3>
-        <p>All models are Ollama-based. Set in <code>.env</code> (see <code>.env.example</code>):</p>
+
+        <h3>Models and configuration</h3>
+        <p>All chat models are Ollama-based. Copy <code>.env.example</code> to <code>.env</code> and adjust:</p>
         <ul>
-          <li><strong>DEFAULT_MODEL</strong> — Used by Direct, Document, Web, RAG, and Template panels (e.g. <code>ollama:llama3.2</code>).</li>
-          <li><strong>AGENTIC_MODEL</strong> — Used by the Agent Override panel; use a thinking model (e.g. <code>qwen3:0.6b</code>, <code>deepseek-r1:8b</code>).</li>
-          <li><strong>EMBEDDING_MODEL</strong> — Used for RAG (default <code>nomic-embed-text</code>).</li>
+          <li><strong>DEFAULT_MODEL</strong> — Direct, Document (extract), Web, RAG, Template (e.g. <code>ollama:llama3.2</code>).</li>
+          <li><strong>VISION_MODEL</strong> — Document Injection vision mode for images (e.g. <code>ollama:qwen2.5vl:7b</code>).</li>
+          <li><strong>WHISPER_MODEL</strong> — Local audio transcription via faster-whisper (<code>base</code>, <code>small</code>, etc.). Tune <code>WHISPER_*</code> vars for gain, multi-pass, and no-speech threshold.</li>
+          <li><strong>EMBEDDING_MODEL</strong> — RAG embeddings (default <code>nomic-embed-text</code>).</li>
+          <li><strong>AGENTIC_MODEL</strong> — Agent Override panel (e.g. <code>qwen3:0.6b</code>).</li>
+          <li><strong>QDRANT_URL</strong> / <strong>QDRANT_COLLECTION</strong> — Vector store for RAG.</li>
+          <li><strong>WEB_FETCH_JS</strong> — <code>true</code> for Playwright-based web fetch.</li>
         </ul>
-        <p>Run <code>ollama pull &lt;model&gt;</code> then set the variable and restart the app.</p>
-        <p>DVAIA is a vulnerable web application for manual LLM security testing. Use the panels on the left to explore various attack vectors interactively.</p>
+        <p>Run <code>ollama pull &lt;model&gt;</code>, set the variable, and restart the app (or <code>docker compose up --build</code>).</p>
       </div>
     </div>
     <div class="clear"></div>
@@ -646,6 +729,6 @@ Bob,bob@example.com,2024-01-02</textarea>
     DVAIA - Damn Vulnerable AI Application - Vulnerable application for LLM application security testing. Do not expose to untrusted networks.
   </div>
 
-  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/main.js') }}?v={{ static_version }}"></script>
 </body>
 </html>

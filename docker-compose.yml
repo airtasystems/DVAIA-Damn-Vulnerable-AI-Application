@@ -13,7 +13,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     ports:
-      - "11434:11434"
+      - "11480:11434"
     restart: "no" # unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -28,10 +28,13 @@ services:
         ollama pull nomic-embed-text
         # Pull qwen3:0.6b for Agentic panel (thinking/CoT)
         ollama pull qwen3:0.6b
+        # Pull qwen2.5vl:7b for Document Injection vision mode
+        ollama pull qwen2.5vl:7b
         # Or pull manually
         # docker compose exec ollama ollama pull llama3.2
         # docker compose exec ollama ollama pull nomic-embed-text
         # docker compose exec ollama ollama pull qwen3:0.6b
+        # docker compose exec ollama ollama pull qwen2.5vl:7b
         
         # Keep container running
         wait
@@ -61,6 +64,8 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - DEFAULT_MODEL=${DEFAULT_MODEL:-ollama:llama3.2}
+      - VISION_MODEL=${VISION_MODEL:-ollama:qwen2.5vl:7b}
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
       # All data stored in /tmp (cleared when container stops)
       - DATABASE_URI=/tmp/app.db
       - UPLOAD_DIR=/tmp/uploads

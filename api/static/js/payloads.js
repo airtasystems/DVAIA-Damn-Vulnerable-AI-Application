@@ -212,6 +212,15 @@ document.getElementById("main_menu").addEventListener("click", function(e) {
   if (li && li.dataset.panel === "payloads") setTimeout(schedulePayloadPreview, 50);
 });
 
+function payloadFileUrl(relativePath, cacheKey) {
+  const rel = (relativePath || "").replace(/^\/+/, "");
+  let url = API + "/payloads/file/" + encodeURIComponent(rel);
+  if (cacheKey != null && cacheKey !== "") {
+    url += (url.indexOf("?") >= 0 ? "&" : "?") + "v=" + encodeURIComponent(String(cacheKey));
+  }
+  return url;
+}
+
 async function loadPayloadsList() {
   try {
     const r = await fetch(API + "/payloads/list", { credentials: "include" });
@@ -231,7 +240,8 @@ async function loadPayloadsList() {
     files.forEach(f => {
       const tr = document.createElement("tr");
       const rel = f.relative_path || f.name;
-      const downloadUrl = API + "/payloads/file/" + encodeURIComponent(rel);
+      const cacheKey = f.mtime != null ? f.mtime : (f.size != null ? f.size : Date.now());
+      const downloadUrl = payloadFileUrl(rel, cacheKey);
       tr.innerHTML = "<td>" + escapeHtml(f.name) + "</td><td><code>" + escapeHtml(rel) + "</code></td><td>" + (f.size != null ? f.size + " B" : "") + "</td><td><a href=\"" + escapeHtml(downloadUrl) + "\" target=\"_blank\" rel=\"noopener\">Download</a></td>";
       tbody.appendChild(tr);
     });
@@ -246,6 +256,13 @@ function escapeHtml(s) {
   const div = document.createElement("div");
   div.textContent = s;
   return div.innerHTML;
+}
+
+function parsePayloadNumber(id, fallback) {
+  const el = document.getElementById(id);
+  if (!el) return fallback;
+  const value = parseFloat(el.value);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 document.getElementById("btn_payload_generate").addEventListener("click", async () => {
@@ -303,6 +320,19 @@ document.getElementById("btn_payload_generate").addEventListener("click", async 
   }
   if (assetType === "audio_tts") {
     body.text = document.getElementById("payload_tts_text").value;
+    body.overlay_text = document.getElementById("payload_tts_overlay_text").value.trim();
+    body.overlay_level = parsePayloadNumber("payload_tts_overlay_level", 0.15);
+    body.noise_level = parsePayloadNumber("payload_tts_noise_level", 0);
+    body.background_tone_hz = parsePayloadNumber("payload_tts_background_tone_hz", 0);
+    body.background_tone_level = parsePayloadNumber("payload_tts_background_tone_level", 0.2);
+    body.pitch_semitones = parsePayloadNumber("payload_tts_pitch_semitones", 0);
+    body.speed_factor = parsePayloadNumber("payload_tts_speed_factor", 1);
+    body.echo_delay_ms = parsePayloadNumber("payload_tts_echo_delay_ms", 0);
+    body.echo_decay = parsePayloadNumber("payload_tts_echo_decay", 0.4);
+    body.distortion = parsePayloadNumber("payload_tts_distortion", 0);
+    body.gain_db = parsePayloadNumber("payload_tts_gain_db", 0);
+    body.low_pass_hz = parsePayloadNumber("payload_tts_low_pass_hz", 0);
+    body.high_pass_hz = parsePayloadNumber("payload_tts_high_pass_hz", 0);
     body.filename = document.getElementById("payload_filename_tts").value.trim() || undefined;
   }
   document.getElementById("btn_payload_generate").disabled = true;
@@ -348,12 +378,31 @@ document.getElementById("btn_payload_generate").addEventListener("click", async 
       return;
     }
     const rel = data.relative_path || data.path || "";
-    const downloadUrl = rel ? (API + "/payloads/file/" + encodeURIComponent(rel)) : "";
+    const cacheKey = Date.now();
+    const downloadUrl = rel ? payloadFileUrl(rel, cacheKey) : "";
     document.getElementById("payload_download_link").href = downloadUrl;
     document.getElementById("payload_download_link").textContent = data.path || rel || "file";
     document.getElementById("payload_relative_path").textContent = rel;
+    const audioPreview = document.getElementById("payload_audio_preview");
+    const audioPlayer = document.getElementById("payload_audio_player");
+    if (audioPreview && audioPlayer) {
+      const isAudio = assetType === "audio_synthetic" || assetType === "audio_tts";
+      if (isAudio && downloadUrl) {
+        audioPlayer.src = downloadUrl;
+        audioPlayer.load();
+        audioPreview.style.display = "block";
+      } else {
+        audioPlayer.removeAttribute("src");
+        audioPlayer.load();
+        audioPreview.style.display = "none";
+      }
+    }
     resultEl.style.display = "block";
-    statusEl.textContent = "Generated successfully.";
+    statusEl.textContent = assetType === "audio_synthetic"
+      ? ("Generated " + (body.frequency != null ? body.frequency : 440) + " Hz tone successfully.")
+      : (assetType === "audio_tts" && Array.isArray(data.effects_applied) && data.effects_applied.length
+        ? ("Generated with effects: " + data.effects_applied.join(", ") + ".")
+        : (data.warning || "Generated successfully."));
     statusEl.className = "message";
     statusEl.style.display = "block";
     loadPayloadsList();

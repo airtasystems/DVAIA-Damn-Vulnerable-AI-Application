@@ -78,7 +78,7 @@ Edit your security group to allow these inbound rules:
 |------|----------|------|--------|---------|
 | SSH | TCP | 22 | `Your IP/32` | SSH access |
 | Custom TCP | TCP | 5000 | `0.0.0.0/0` or `Your IP/32` | Web UI access |
-| Custom TCP | TCP | 11434 | `Your IP/32` | Ollama API (optional, debugging) |
+| Custom TCP | TCP | 11480 | `Your IP/32` | Ollama API (optional, debugging) |
 | Custom TCP | TCP | 6333 | `Your IP/32` | Qdrant UI (optional, debugging) |
 
 ### Security Options
@@ -245,7 +245,7 @@ docker compose ps
 # Expected output:
 # NAME           IMAGE              STATUS    PORTS
 # dvaia-app      dvaia-dvaia        Up        0.0.0.0:5000->5000/tcp
-# dvaia-ollama   ollama/ollama      Up        0.0.0.0:11434->11434/tcp
+# dvaia-ollama   ollama/ollama      Up        0.0.0.0:11480->11434/tcp
 # dvaia-qdrant   qdrant/qdrant      Up        0.0.0.0:6333->6333/tcp
 ```
 

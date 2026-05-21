@@ -216,10 +216,25 @@ def generate_audio_tts(
     text: str,
     filename: Optional[str] = None,
     subdir: str = "audio",
+    lang: str = "en",
+    *,
+    noise_level: float = 0.0,
+    background_tone_hz: float = 0.0,
+    background_tone_level: float = 0.2,
+    pitch_semitones: float = 0.0,
+    speed_factor: float = 1.0,
+    echo_delay_ms: float = 0.0,
+    echo_decay: float = 0.4,
+    distortion: float = 0.0,
+    gain_db: float = 0.0,
+    low_pass_hz: float = 0.0,
+    high_pass_hz: float = 0.0,
+    overlay_text: Optional[str] = None,
+    overlay_level: float = 0.15,
 ) -> Path:
     """
-    Create a WAV from text (TTS). Uses gTTS + pydub if available, else synthetic fallback.
-    Returns absolute path. For pydub, ffmpeg must be on PATH.
+    Create a WAV from text (TTS). Uses gTTS + pydub if available; returns MP3 when ffmpeg is missing.
+    Optional post-processing effects support ASR/transcription red-team testing.
     """
     from payloads import audio
 
@@ -227,4 +242,18 @@ def generate_audio_tts(
         text=text,
         filename=filename,
         subdir=subdir,
+        lang=lang,
+        noise_level=noise_level,
+        background_tone_hz=background_tone_hz,
+        background_tone_level=background_tone_level,
+        pitch_semitones=pitch_semitones,
+        speed_factor=speed_factor,
+        echo_delay_ms=echo_delay_ms,
+        echo_decay=echo_decay,
+        distortion=distortion,
+        gain_db=gain_db,
+        low_pass_hz=low_pass_hz,
+        high_pass_hz=high_pass_hz,
+        overlay_text=overlay_text,
+        overlay_level=overlay_level,
     )

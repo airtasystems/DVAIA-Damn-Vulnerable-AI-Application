@@ -3,7 +3,7 @@ RAG retrieval: embeddings for semantic search. Chunks and documents are embedded
 Search uses Qdrant vector similarity. Keyword fallback removed when using Qdrant.
 Documents are split into smaller chunks so retrieval returns only relevant parts.
 """
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app import embeddings as app_embeddings
 from app import vector_store as app_vector_store
@@ -80,11 +80,27 @@ def search_diverse(
     query: str,
     top_k_per_source: int = _TOP_K_PER_SOURCE,
     fetch_limit: int = _SEARCH_DIVERSE_FETCH,
+    source_filter: Optional[str] = None,
 ) -> List[str]:
+    """Semantic search; returns content strings only (backward compatible)."""
+    hits = search_diverse_hits(
+        query,
+        top_k_per_source=top_k_per_source,
+        fetch_limit=fetch_limit,
+        source_filter=source_filter,
+    )
+    return [h["content"] for h in hits if h.get("content")]
+
+
+def search_diverse_hits(
+    query: str,
+    top_k_per_source: int = _TOP_K_PER_SOURCE,
+    fetch_limit: int = _SEARCH_DIVERSE_FETCH,
+    source_filter: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """
-    Semantic search that balances results across sources. Fetches many candidates,
-    then takes the best top_k_per_source chunks from each source so a single chunk
-    (e.g. manual text) is not crowded out by a large document.
+    Semantic search returning chunk dicts: content, source, score.
+    Optional source_filter limits results to one indexed source label.
     """
     q = (query or "").strip()
     if not q:
@@ -96,23 +112,74 @@ def search_diverse(
         hits = app_vector_store.search_with_scores(query_vec, limit=fetch_limit)
         if not hits:
             return []
-        # Group by source; keep score for ordering
+        if source_filter:
+            sf = source_filter.strip()
+            hits = [h for h in hits if (h.get("source") or "").strip() == sf]
+            if not hits:
+                return []
         by_source: Dict[str, List[Dict[str, Any]]] = {}
         for h in hits:
             if not h.get("content"):
                 continue
             src = (h.get("source") or "").strip() or "unknown"
             by_source.setdefault(src, []).append(h)
-        # Best top_k_per_source per source (already sorted by score from Qdrant)
         chosen = []
-        for src, list_h in by_source.items():
+        for list_h in by_source.values():
             for h in list_h[:top_k_per_source]:
                 chosen.append(h)
-        # Sort by score descending so most relevant overall come first
         chosen.sort(key=lambda x: (x.get("score") is None, -(x.get("score") or 0)))
-        return [h["content"] for h in chosen if h.get("content")]
+        return chosen
     except Exception:
         return []
+
+
+def format_chunks_for_prompt(hits: List[Dict[str, Any]]) -> str:
+    """Format retrieved chunks with explicit source labels for the LLM."""
+    parts: List[str] = []
+    for idx, hit in enumerate(hits, start=1):
+        content = (hit.get("content") or "").strip()
+        if not content:
+            continue
+        src = (hit.get("source") or "unknown").strip()
+        score = hit.get("score")
+        header = f"[retrieved chunk {idx} | source: {src}"
+        if score is not None:
+            header += f" | score: {score:.3f}"
+        header += "]"
+        parts.append(f"{header}\n{content}")
+    return "\n\n".join(parts)
+
+
+def list_sources() -> List[str]:
+    """Distinct source labels currently indexed in RAG."""
+    seen: set[str] = set()
+    sources: List[str] = []
+    for row in list_chunks():
+        src = (row.get("source") or "").strip()
+        if src and src not in seen:
+            seen.add(src)
+            sources.append(src)
+    sources.sort()
+    return sources
+
+
+def resolve_rag_source_label(
+    *,
+    document_id: Optional[int] = None,
+    payload_relative_path: Optional[str] = None,
+    user_id: Optional[int] = None,
+) -> Optional[str]:
+    """Map UI document selection to the RAG source label used at index time."""
+    from app import documents as app_documents
+
+    if payload_relative_path:
+        return payload_relative_path.strip().replace("\\", "/")
+    if document_id is not None:
+        doc = app_documents.get_document(document_id, user_id)
+        if not doc:
+            return None
+        return (doc.get("filename") or f"document_{document_id}").strip()
+    return None
 
 
 def list_chunks() -> List[Dict[str, Any]]:

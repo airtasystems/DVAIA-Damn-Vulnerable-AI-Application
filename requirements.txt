@@ -2,6 +2,8 @@ flask>=3.0.0
 gunicorn>=21.0.0
 requests
 curl_cffi>=0.7.0
+beautifulsoup4
+lxml
 python-dotenv
 pyyaml
 PyPDF2
@@ -22,5 +24,9 @@ scipy
 # TTS audio generation (requires ffmpeg on PATH for pydub)
 gTTS
 pydub
+faster-whisper
+# Optional Google STT fallback when WHISPER_FALLBACK_GOOGLE=true
+SpeechRecognition
+pyzbar
 # CSV dummy data generation (realistic email, name, date)
 Faker
