@@ -142,8 +142,8 @@ body::before {
   width: 100%;
   max-width: var(--layout-max);
   margin: 0 auto;
-  padding: 14px 24px;
-  background: #620d0d;
+  padding: 4px 24px;
+  background: #12142e;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
