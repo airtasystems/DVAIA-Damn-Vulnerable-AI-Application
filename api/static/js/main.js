@@ -1,4 +1,277 @@
 const API = "/api";
+const LLM_PROVIDER_KEY = "dvaia_llm_provider";
+let modelsConfigCache = null;
+let settingsConfigCache = null;
+
+async function loadModelsConfig() {
+  if (modelsConfigCache) return modelsConfigCache;
+  try {
+    const r = await fetch(API + "/models", { credentials: "include" });
+    modelsConfigCache = await r.json().catch(() => ({}));
+  } catch (_) {
+    modelsConfigCache = {};
+  }
+  updateProviderUI();
+  return modelsConfigCache;
+}
+
+function getProvider() {
+  const cfg = modelsConfigCache || {};
+  if (cfg.openai_only) return "openai";
+  if (cfg.gemini_only) return "gemini";
+  if (cfg.ollama_enabled === false) return cfg.default_provider || "gemini";
+  const stored = sessionStorage.getItem(LLM_PROVIDER_KEY);
+  if (stored === "gemini" || stored === "openai" || stored === "ollama") return stored;
+  return cfg.default_provider || "ollama";
+}
+
+function setProvider(provider) {
+  sessionStorage.setItem(LLM_PROVIDER_KEY, provider);
+  updateProviderUI();
+}
+
+function providerModels() {
+  const cfg = modelsConfigCache || {};
+  const p = getProvider();
+  return (cfg.providers && cfg.providers[p]) || {};
+}
+
+async function getChatModelId() {
+  await loadModelsConfig();
+  const m = providerModels();
+  return m.chat || modelsConfigCache.default || "ollama:llama3.2";
+}
+
+async function getVisionModelId() {
+  await loadModelsConfig();
+  const m = providerModels();
+  return m.vision || modelsConfigCache.vision_model || "ollama:qwen2.5vl:7b";
+}
+
+function llmProviderPayload() {
+  return { llm_provider: getProvider() };
+}
+
+function updateProviderUI() {
+  const cfg = modelsConfigCache || {};
+  const geminiOk = !!cfg.gemini_configured;
+  const openaiOk = !!cfg.openai_configured;
+  const ollamaOk = cfg.ollama_enabled !== false && !cfg.gemini_only && !cfg.openai_only;
+  if (cfg.gemini_only && geminiOk) {
+    sessionStorage.setItem(LLM_PROVIDER_KEY, "gemini");
+  }
+  if (cfg.openai_only && openaiOk) {
+    sessionStorage.setItem(LLM_PROVIDER_KEY, "openai");
+  }
+  const provider = getProvider();
+  document.querySelectorAll('input[name="llm_provider"]').forEach(el => {
+    el.checked = el.value === provider;
+    if (el.value === "gemini") el.disabled = !geminiOk;
+    if (el.value === "openai") el.disabled = !openaiOk;
+    if (el.value === "ollama") el.disabled = !ollamaOk;
+  });
+  const noteGeminiOnly = document.getElementById("llm_provider_note_gemini_only");
+  const noteOpenaiOnly = document.getElementById("llm_provider_note_openai_only");
+  const noteCloudGemini = document.getElementById("llm_provider_note_cloud");
+  const noteCloudOpenai = document.getElementById("llm_provider_note_cloud_openai");
+  const noteNoKeyGemini = document.getElementById("llm_provider_note_no_key");
+  const noteNoKeyOpenai = document.getElementById("llm_provider_note_no_key_openai");
+  [noteGeminiOnly, noteOpenaiOnly, noteCloudGemini, noteCloudOpenai, noteNoKeyGemini, noteNoKeyOpenai].forEach(el => {
+    if (el) el.style.display = "none";
+  });
+
+  if (cfg.openai_only && provider === "openai") {
+    if (noteOpenaiOnly) noteOpenaiOnly.style.display = "block";
+  } else if (cfg.gemini_only && provider === "gemini") {
+    if (noteGeminiOnly) noteGeminiOnly.style.display = "block";
+  } else if (provider === "openai") {
+    if (noteCloudOpenai) noteCloudOpenai.style.display = "block";
+  } else if (provider === "gemini") {
+    if (noteCloudGemini) noteCloudGemini.style.display = "block";
+  } else if (!geminiOk && noteNoKeyGemini) {
+    noteNoKeyGemini.style.display = "block";
+  }
+  if (!openaiOk && provider !== "openai" && noteNoKeyOpenai) {
+    noteNoKeyOpenai.style.display = "block";
+  }
+  updateDirectSamplingUI();
+}
+
+function updateDirectSamplingUI() {
+  const provider = getProvider();
+  const isCloud = provider === "gemini" || provider === "openai";
+  const cloudName = provider === "openai" ? "OpenAI" : "Gemini";
+  const intro = document.getElementById("sampling_options_intro");
+  if (intro) {
+    intro.textContent = isCloud
+      ? "Cloud (" + cloudName + "): temperature, top P, and max tokens are sent to the API. Top K applies to Gemini only. Repeat penalty is Ollama-only and is ignored."
+      : "Local (Ollama): all options below are passed to the Ollama runtime.";
+  }
+  document.querySelectorAll("[data-sampling-for='ollama']").forEach(el => {
+    el.style.display = isCloud ? "none" : "";
+  });
+  const rp = document.getElementById("opt_repeat_penalty");
+  if (rp) rp.disabled = isCloud;
+  const topKRow = document.getElementById("opt_top_k")?.closest(".sampling-option-row");
+  if (topKRow) topKRow.style.display = provider === "openai" ? "none" : "";
+}
+
+function getDirectSamplingOptions() {
+  const opts = {};
+  const t = parseFloat(document.getElementById("opt_temperature")?.value);
+  if (!Number.isNaN(t)) opts.temperature = t;
+  const k = parseInt(document.getElementById("opt_top_k")?.value, 10);
+  if (getProvider() !== "openai" && !Number.isNaN(k)) opts.top_k = k;
+  const p = parseFloat(document.getElementById("opt_top_p")?.value);
+  if (!Number.isNaN(p)) opts.top_p = p;
+  const m = parseInt(document.getElementById("opt_max_tokens")?.value, 10);
+  if (!Number.isNaN(m)) opts.max_tokens = m;
+  if (getProvider() === "ollama") {
+    const rp = parseFloat(document.getElementById("opt_repeat_penalty")?.value);
+    if (!Number.isNaN(rp)) opts.repeat_penalty = rp;
+  }
+  return opts;
+}
+
+function showSettingsCacheStatus(message, isError) {
+  const el = document.getElementById("settings_cache_status");
+  if (!el) return;
+  el.textContent = message;
+  el.className = "settings-status message" + (isError ? " error" : " success");
+  el.style.display = "block";
+}
+
+function showSettingsPersistStatus(message, isError) {
+  const el = document.getElementById("settings_persist_status");
+  if (!el) return;
+  el.textContent = message;
+  el.className = "settings-status message" + (isError ? " error" : " success");
+  el.style.display = "block";
+}
+
+async function loadSettingsConfig() {
+  try {
+    const r = await fetch(API + "/settings", { credentials: "include" });
+    settingsConfigCache = await r.json().catch(() => ({}));
+  } catch (_) {
+    settingsConfigCache = {};
+  }
+  updateSettingsUI();
+  return settingsConfigCache;
+}
+
+function updateSettingsUI() {
+  const cfg = settingsConfigCache || {};
+  const resetBox = document.getElementById("settings_reset_data_on_start");
+  if (resetBox) resetBox.checked = !!cfg.reset_data_on_start;
+  const dbUri = document.getElementById("settings_database_uri");
+  const uploadDir = document.getElementById("settings_upload_dir");
+  if (dbUri && cfg.database_uri) dbUri.textContent = cfg.database_uri;
+  if (uploadDir && cfg.upload_dir) uploadDir.textContent = cfg.upload_dir;
+  const ephemeralWarn = document.getElementById("settings_ephemeral_warning");
+  if (ephemeralWarn) {
+    ephemeralWarn.style.display = cfg.using_ephemeral_storage ? "block" : "none";
+  }
+}
+
+async function saveResetDataOnStart(enabled) {
+  showSettingsPersistStatus("Saving…", false);
+  try {
+    const r = await fetch(API + "/settings", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reset_data_on_start: enabled }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showSettingsPersistStatus(data.error || "Failed to save setting", true);
+      return;
+    }
+    settingsConfigCache = data;
+    updateSettingsUI();
+    const msg = data.message || (
+      enabled
+        ? "Enabled: data will be cleared on next app start. Restart the container to apply."
+        : "Disabled: document store and RAG will persist across restarts."
+    );
+    showSettingsPersistStatus(msg, false);
+    appendTerminalLine("Settings: " + msg, "muted");
+  } catch (err) {
+    showSettingsPersistStatus(String(err.message || err), true);
+  }
+}
+
+document.getElementById("settings_reset_data_on_start")?.addEventListener("change", function () {
+  saveResetDataOnStart(this.checked);
+});
+
+async function clearSettingsCache(target, buttonEl) {
+  if (buttonEl) buttonEl.disabled = true;
+  showSettingsCacheStatus("Clearing " + target + "…", false);
+  try {
+    const r = await fetch(API + "/settings/clear-cache", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }),
+    });
+    const contentType = r.headers.get("content-type") || "";
+    let data = {};
+    if (contentType.includes("application/json")) {
+      data = await r.json();
+    } else {
+      await r.text();
+    }
+    if (!r.ok) {
+      let err = data.error;
+      if (!err) {
+        if (r.status === 404) {
+          err = "Cache API not found (HTTP 404). Restart the app: docker compose restart dvaia";
+        } else {
+          err = "Request failed (HTTP " + r.status + ")";
+        }
+      }
+      showSettingsCacheStatus(err, true);
+      return;
+    }
+    if (target === "gemini" || target === "openai") {
+      modelsConfigCache = null;
+      await loadModelsConfig();
+    }
+    let msg = data.message || ("Cleared " + target);
+    if (data.collections && data.collections.length) {
+      msg += " Collections: " + data.collections.join(", ") + ".";
+    }
+    if (data.truncated) msg += " (path list truncated)";
+    showSettingsCacheStatus(msg, false);
+    appendTerminalLine("Cache: " + msg, "muted");
+  } catch (err) {
+    showSettingsCacheStatus(String(err.message || err), true);
+  } finally {
+    if (buttonEl) buttonEl.disabled = false;
+  }
+}
+
+document.getElementById("btn_clear_rag_cache")?.addEventListener("click", function () {
+  if (!confirm("Delete all RAG chunks from Qdrant? You will need to re-index documents.")) return;
+  clearSettingsCache("rag", this);
+});
+document.getElementById("btn_clear_gemini_cache")?.addEventListener("click", function () {
+  clearSettingsCache("gemini", this);
+});
+document.getElementById("btn_clear_openai_cache")?.addEventListener("click", function () {
+  clearSettingsCache("openai", this);
+});
+document.getElementById("btn_clear_pycache")?.addEventListener("click", function () {
+  clearSettingsCache("pycache", this);
+});
+
+document.querySelectorAll('input[name="llm_provider"]').forEach(el => {
+  el.addEventListener("change", () => {
+    if (el.checked) setProvider(el.value);
+  });
+});
 
 async function getSession() {
   const r = await fetch(API + "/session", { credentials: "include" });
@@ -242,6 +515,13 @@ function showPanel(panelId) {
   const menuItem = document.querySelector('#main_menu li[data-panel="' + panelId + '"]');
   if (panel) panel.classList.add("active");
   if (menuItem) menuItem.classList.add("selected");
+  if (panelId === "settings") {
+    loadModelsConfig();
+    loadSettingsConfig();
+  }
+  if (panelId === "direct") {
+    updateDirectSamplingUI();
+  }
 }
 
 function updateSessionUI(data) {
@@ -333,34 +613,16 @@ document.getElementById("form_mfa").addEventListener("submit", async (e) => {
   showPanel(DEFAULT_PANEL);
 });
 
-function getDirectModelId() {
-  return "ollama:llama3.2";
-}
-
-function getDirectSamplingOptions() {
-  const opts = {};
-  const t = parseFloat(document.getElementById("opt_temperature")?.value);
-  if (!Number.isNaN(t)) opts.temperature = t;
-  const k = parseInt(document.getElementById("opt_top_k")?.value, 10);
-  if (!Number.isNaN(k)) opts.top_k = k;
-  const p = parseFloat(document.getElementById("opt_top_p")?.value);
-  if (!Number.isNaN(p)) opts.top_p = p;
-  const m = parseInt(document.getElementById("opt_max_tokens")?.value, 10);
-  if (!Number.isNaN(m)) opts.max_tokens = m;
-  const rp = parseFloat(document.getElementById("opt_repeat_penalty")?.value);
-  if (!Number.isNaN(rp)) opts.repeat_penalty = rp;
-  return opts;
-}
-
 document.getElementById("send_direct").addEventListener("click", async () => {
   const prompt = document.getElementById("prompt_direct").value.trim();
   if (!prompt) return;
   setLoading("output_direct", "send_direct", true);
-  const model_id = getDirectModelId();
+  const model_id = await getChatModelId();
   const options = getDirectSamplingOptions();
-  const body = { prompt, model_id };
+  const body = { prompt, model_id, ...llmProviderPayload() };
   if (Object.keys(options).length) body.options = options;
   appendTerminalLine("Direct chat request", "muted");
+  appendTerminalLine("Provider: " + getProvider(), "muted");
   appendTerminalLine("Model: " + model_id, "muted");
   appendTerminalLine("Options: " + (Object.keys(options).length ? JSON.stringify(options) : "(none)"), "muted");
   try {
@@ -379,6 +641,9 @@ document.getElementById("send_direct").addEventListener("click", async () => {
     }
     setOutput("output_direct", data.response ?? "", "", data.thinking ?? "");
     addTerminalResponseToHistory(data.response ?? "", data.thinking ?? "", model_id);
+    if (data.duration_ms != null) {
+      appendTerminalLine("Duration: " + data.duration_ms + " ms", "muted");
+    }
   } catch (err) {
     setOutput("output_direct", err.message || "Network error", "error");
     appendTerminalLine("Direct chat: " + (err.message || "Network error"), "fail");
@@ -548,16 +813,17 @@ document.getElementById("send_document").addEventListener("click", async () => {
     return;
   }
   const useVision = document.getElementById("doc_use_vision") && document.getElementById("doc_use_vision").checked;
+  const visionModelId = await getVisionModelId();
   if (useVision) {
     setLoading(
       "output_document",
       "send_document",
       true,
-      "Vision model processing (qwen2.5vl) — typically 30–90 seconds…"
+      "Vision model processing — typically 30–90 seconds…"
     );
     startDocumentElapsedTimer(
       "output_document",
-      "Vision model processing (qwen2.5vl) — typically 30–90 seconds"
+      "Vision model processing — typically 30–90 seconds"
     );
   } else {
     setLoading("output_document", "send_document", true);
@@ -567,7 +833,10 @@ document.getElementById("send_document").addEventListener("click", async () => {
       prompt,
       ...selection,
       context_mode: useVision ? "vision" : "extract",
+      model_id: await getChatModelId(),
+      ...llmProviderPayload(),
     };
+    if (useVision) body.vision_model_id = visionModelId;
     const r = await fetch(API + "/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -676,7 +945,13 @@ document.getElementById("send_web").addEventListener("click", async () => {
   }
   setLoading("output_web", "send_web", true, "Fetching URL and querying model…");
   try {
-    const body = { prompt, context_from: "url", url };
+    const body = {
+      prompt,
+      context_from: "url",
+      url,
+      model_id: await getChatModelId(),
+      ...llmProviderPayload(),
+    };
     const r = await fetch(API + "/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -717,19 +992,12 @@ document.getElementById("send_web").addEventListener("click", async () => {
 // Agentic: multi-round conversation state
 let agenticMessages = [];
 let agenticThinking = "";
-let agenticLastToolCalls = [];  // tool names used in the last turn (for summary)
-let agenticModelIdCached = null;  // from /api/models agentic_model (env AGENTIC_MODEL)
+let agenticLastToolCalls = [];
 
 async function getAgenticModelId() {
-  if (agenticModelIdCached) return agenticModelIdCached;
-  try {
-    const r = await fetch(API + "/models", { credentials: "include" });
-    const data = await r.json().catch(() => ({}));
-    agenticModelIdCached = data.agentic_model || "qwen3:0.6b";
-  } catch (_) {
-    agenticModelIdCached = "qwen3:0.6b";
-  }
-  return agenticModelIdCached;
+  await loadModelsConfig();
+  const m = providerModels();
+  return m.agentic || modelsConfigCache.agentic_model || "qwen3:0.6b";
 }
 
 function parseThinkingIntoSteps(thinkingText) {
@@ -868,6 +1136,7 @@ document.getElementById("send_agentic").addEventListener("click", async () => {
     messages: agenticMessages,
     max_steps: Math.max(1, Math.min(50, maxSteps)),
     timeout: Math.max(10, Math.min(300, timeout)),
+    ...llmProviderPayload(),
   };
   if (toolNames) body.tool_names = toolNames;
   try {
@@ -918,7 +1187,12 @@ document.getElementById("send_template").addEventListener("click", async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ template, user_input: userInput }),
+      body: JSON.stringify({
+        template,
+        user_input: userInput,
+        model_id: await getChatModelId(),
+        ...llmProviderPayload(),
+      }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -955,7 +1229,7 @@ document.getElementById("rag_btn_add_chunk").addEventListener("click", async () 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ source, content }),
+      body: JSON.stringify({ source, content, ...llmProviderPayload() }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -979,16 +1253,19 @@ document.getElementById("rag_btn_add_document").addEventListener("click", async 
   }
   statusEl.textContent = "Adding…";
   try {
+    const ragProviderBody = llmProviderPayload();
     const r = selection.context_from === "payload"
       ? await fetch(API + "/rag/add-payload", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ payload_relative_path: selection.payload_relative_path }),
+          body: JSON.stringify({ payload_relative_path: selection.payload_relative_path, ...ragProviderBody }),
         })
       : await fetch(API + "/rag/add-document/" + selection.document_id, {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
           credentials: "include",
+          body: JSON.stringify(ragProviderBody),
         });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -1033,7 +1310,7 @@ async function previewRagRetrieval() {
   previewEl.style.display = "block";
   previewEl.textContent = "Searching indexed chunks…";
   try {
-    const params = new URLSearchParams({ q });
+    const params = new URLSearchParams({ q, llm_provider: getProvider() });
     if (sourceFilter) params.set("rag_source", sourceFilter);
     const r = await fetch(API + "/rag/retrieve-preview?" + params.toString(), { credentials: "include" });
     const data = await r.json().catch(() => ({}));
@@ -1076,7 +1353,13 @@ document.getElementById("rag_btn_chat").addEventListener("click", async () => {
   }
   setLoading("output_rag", "rag_btn_chat", true);
   try {
-    const body = { prompt, context_from: "rag", rag_query: prompt };
+    const body = {
+      prompt,
+      context_from: "rag",
+      rag_query: prompt,
+      model_id: await getChatModelId(),
+      ...llmProviderPayload(),
+    };
     if (sourceFilter) body.rag_source = sourceFilter;
     const r = await fetch(API + "/chat", {
       method: "POST",
@@ -1667,14 +1950,14 @@ document.getElementById("btn_payload_generate").addEventListener("click", async 
 });
 
 async function loadModelDefault() {
-  // Always use llama3.2, no model selection needed
+  await loadModelsConfig();
 }
 
 (async function init() {
+  await loadModelsConfig();
   const session = await getSession();
   updateSessionUI(session);
   if (!document.querySelector("#main_body .panel.active")) showPanel(DEFAULT_PANEL);
   loadDocuments();
   loadPayloadsList();
-  loadModelDefault();
 })();

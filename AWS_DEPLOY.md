@@ -184,7 +184,7 @@ cd DVAIA
 nano .env
 ```
 
-**Minimal production `.env`:**
+**Minimal production `.env` (Ollama):**
 
 ```bash
 # Application
@@ -201,32 +201,58 @@ SECRET_KEY=$(openssl rand -hex 32)
 # UPLOAD_DIR=/tmp/uploads
 ```
 
+**Gemini-only `.env` (no Ollama required for LLM/RAG; Whisper still local):**
+
+```bash
+PORT=5000
+GEMINI_ONLY=true
+GOOGLE_API_KEY=your-google-ai-studio-key
+GEMINI_CHAT_MODEL=gemini-2.0-flash
+GEMINI_VISION_MODEL=gemini-2.0-flash
+GEMINI_AGENTIC_MODEL=gemini-2.0-flash
+EMBEDDING_BACKEND=gemini
+SECRET_KEY=$(openssl rand -hex 32)
+```
+
+Start without Ollama: `./run_docker.sh --gemini-only` or `docker compose up -d --build` (no `--profile ollama`).
+
+Use the **Cloud (Gemini)** toggle in the UI header after setting `GOOGLE_API_KEY`.
+
 **Important Notes:**
 - The `SECRET_KEY` should be unique for each deployment
 - All data is stored in `/tmp` by default (cleared on restart)
-- Ollama host is automatically set by docker-compose
+- With Ollama profile: `OLLAMA_HOST` is set automatically by `./run_docker.sh` or `docker compose --profile ollama`
 
 Save and exit: `Ctrl+X`, `Y`, `Enter`
 
 ### Build and Start Services
 
-```bash
-# Build and start all containers in background
-docker compose up -d --build
+**With Ollama (default local LLMs):**
 
-# This will:
-# 1. Build the Flask application
-# 2. Download Ollama container
-# 3. Download Qdrant container
-# 4. Auto-pull llama3.2 model (~2GB, takes 2-5 minutes)
-# 5. Auto-pull nomic-embed-text model (~274MB)
+```bash
+./run_docker.sh
+# or: docker compose --profile ollama up -d --build
 ```
+
+**Gemini-only (no Ollama / no model downloads):**
+
+```bash
+./run_docker.sh --gemini-only
+# or: docker compose up -d --build   # with GEMINI_ONLY=true in .env
+```
+
+With Ollama profile, startup will:
+1. Build the Flask application
+2. Download Ollama container
+3. Download Qdrant container
+4. Auto-pull llama3.2 model (~2GB, takes 2-5 minutes)
+5. Auto-pull nomic-embed-text model (~274MB)
 
 ### Monitor Startup Progress
 
 ```bash
-# Watch Ollama downloading models (this takes a few minutes)
-docker compose logs -f ollama
+# Watch Ollama downloading models (Ollama profile only — skip if using --gemini-only)
+docker compose --profile ollama logs -f ollama
 
 # You'll see:
 # "pulling manifest"

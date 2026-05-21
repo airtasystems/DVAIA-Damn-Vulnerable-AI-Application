@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config import get_default_model_id, get_vision_model_id, get_whisper_model_name
 from core.models import generate, generate_with_images
+from core.providers import detect_provider
 
 from app import documents as app_documents
 from app import fetch as app_fetch
@@ -90,6 +91,8 @@ def handle_chat(
     url: Optional[str] = None,
     rag_query: Optional[str] = None,
     rag_source: Optional[str] = None,
+    vision_model_id: Optional[str] = None,
+    llm_provider: Optional[str] = None,
     timeout: int = 120,
     options: Optional[Dict[str, Any]] = None,
     messages: Optional[List[Dict[str, str]]] = None,
@@ -97,7 +100,8 @@ def handle_chat(
     """
     Build full prompt from optional context (upload, payload, url, rag), then call core.generate.
     Returns {"text", "thinking", "context_extracted", "context_warning", "context_mode", "vision_model",
-             "transcription_backend", "whisper_model", "rag_source_filter", "rag_chunk_count"}.
+             "transcription_backend", "whisper_model", "rag_source_filter", "rag_chunk_count",
+             "llm_provider"}.
     """
     mode = _normalize_context_mode(context_mode)
     if messages:
@@ -136,7 +140,7 @@ def handle_chat(
                 and app_documents.is_image_path(file_path)
             )
             if use_vision:
-                vision_model = get_vision_model_id()
+                vision_model = (vision_model_id or get_vision_model_id()).strip()
                 vision_prompt = (
                     "The attached image is context for the following question.\n"
                     f"User question: {prompt or ''}"
@@ -153,6 +157,9 @@ def handle_chat(
                 result["vision_model"] = vision_model
                 result["transcription_backend"] = None
                 result["whisper_model"] = None
+                result["rag_source_filter"] = rag_source_filter
+                result["rag_chunk_count"] = rag_chunk_count
+                result["llm_provider"] = llm_provider or detect_provider(vision_model)
                 return result
 
             if mode == "vision" and file_path is not None and not app_documents.is_image_path(file_path):
@@ -247,7 +254,9 @@ def handle_chat(
         elif context_from == "rag" and rag_query:
             source_filter = (rag_source or "").strip() or None
             rag_source_filter = source_filter
-            hits = app_retrieval.search_diverse_hits(rag_query, source_filter=source_filter)
+            hits = app_retrieval.search_diverse_hits(
+                rag_query, source_filter=source_filter, llm_provider=llm_provider
+            )
             rag_chunk_count = len(hits)
             if hits:
                 joined = app_retrieval.format_chunks_for_prompt(hits)
@@ -290,4 +299,5 @@ def handle_chat(
     result["whisper_model"] = whisper_model
     result["rag_source_filter"] = rag_source_filter
     result["rag_chunk_count"] = rag_chunk_count
+    result["llm_provider"] = llm_provider or detect_provider(chat_model)
     return result

@@ -176,6 +176,126 @@ body::before {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.llm-provider-control,
+.settings-backend-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 36rem;
+}
+.settings-backend-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+.llm-provider-label {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.llm-provider-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 14px;
+  color: var(--text);
+}
+.llm-provider-option input { margin: 0; }
+.llm-provider-option input:disabled + span,
+.llm-provider-option:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.settings-note,
+.llm-provider-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--warning, #c9a227);
+  line-height: 1.45;
+}
+.settings-info-box {
+  margin-top: 0.5rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(201, 162, 39, 0.35);
+  border-radius: var(--radius-sm);
+  background: rgba(201, 162, 39, 0.08);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.settings-info-box p {
+  margin: 0 0 0.65rem 0;
+}
+.settings-info-box p:last-child {
+  margin-bottom: 0;
+}
+.settings-info-box ul {
+  margin: 0.35rem 0 0.65rem 0;
+  padding-left: 1.25rem;
+}
+.settings-info-box li {
+  margin-bottom: 0.25rem;
+}
+.settings-info-box code {
+  font-size: 12px;
+}
+.settings-info-footnote {
+  font-size: 12px !important;
+  margin-top: 0.5rem !important;
+}
+.settings-section {
+  margin: 1.75rem 0;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.settings-section:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.settings-section h3 {
+  margin: 0 0 0.65rem 0;
+  font-size: 1rem;
+}
+.settings-cache-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.settings-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1.45;
+  margin-bottom: 0.5rem;
+}
+.settings-toggle input {
+  margin-top: 0.2rem;
+  flex-shrink: 0;
+}
+.settings-persist-detail {
+  margin-top: 0.35rem;
+  max-width: 42rem;
+}
+.sampling-options-intro {
+  font-size: 0.8rem;
+  margin: 0 0 0.75rem 0;
+  line-height: 1.45;
+}
+.sampling-option-row[data-sampling-for="ollama"].sampling-hidden {
+  display: none !important;
+}
+.settings-status {
+  margin-top: 0.75rem;
 }
 #session_info .user {
   color: var(--text-muted);

@@ -22,7 +22,6 @@ def _chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_
     text = (text or "").strip()
     if not text:
         return []
-    # Prefer paragraph boundaries (double newline)
     parts = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks = []
     for p in parts:
@@ -39,38 +38,37 @@ def _chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_
     return chunks if chunks else [text[:chunk_size]]
 
 
-def add_document(source: str, text: str) -> int:
+def add_document(source: str, text: str, llm_provider: Optional[str] = None) -> int:
     """Split document text into chunks, embed each, and add to RAG. Returns number of chunks added."""
     chunks = _chunk_text(text)
     for chunk in chunks:
-        add_chunk(source, chunk)
+        add_chunk(source, chunk, llm_provider=llm_provider)
     return len(chunks)
 
 
-def add_chunk(source: str, content: str) -> str:
+def add_chunk(source: str, content: str, llm_provider: Optional[str] = None) -> str:
     """Insert a chunk and compute its embedding; store in Qdrant. Returns point id (UUID string)."""
     to_embed = content if len(content) <= _EMBED_MAX_CHARS else content[:_EMBED_MAX_CHARS]
-    vec = app_embeddings.embed_text(to_embed)
+    vec = app_embeddings.embed_text(to_embed, llm_provider=llm_provider)
     if not vec:
         raise RuntimeError("Could not embed chunk; embedding service unavailable or returned empty.")
-    return app_vector_store.add_point(source, content, vec)
+    return app_vector_store.add_point(source, content, vec, llm_provider=llm_provider)
 
 
-# For diverse retrieval: fetch this many then take top_k_per_source per source
 _SEARCH_DIVERSE_FETCH = 200
 _TOP_K_PER_SOURCE = 10
 
 
-def search(query: str, top_k: int = 5) -> List[str]:
+def search(query: str, top_k: int = 5, llm_provider: Optional[str] = None) -> List[str]:
     """Semantic search: embed query, return top_k chunks by similarity via Qdrant."""
     q = (query or "").strip()
     if not q:
         return []
     try:
-        query_vec = app_embeddings.embed_text(q)
+        query_vec = app_embeddings.embed_text(q, llm_provider=llm_provider)
         if not query_vec:
             return []
-        hits = app_vector_store.search(query_vec, limit=top_k)
+        hits = app_vector_store.search(query_vec, limit=top_k, llm_provider=llm_provider)
         return [h["content"] for h in hits if h.get("content")]
     except Exception:
         return []
@@ -81,6 +79,7 @@ def search_diverse(
     top_k_per_source: int = _TOP_K_PER_SOURCE,
     fetch_limit: int = _SEARCH_DIVERSE_FETCH,
     source_filter: Optional[str] = None,
+    llm_provider: Optional[str] = None,
 ) -> List[str]:
     """Semantic search; returns content strings only (backward compatible)."""
     hits = search_diverse_hits(
@@ -88,6 +87,7 @@ def search_diverse(
         top_k_per_source=top_k_per_source,
         fetch_limit=fetch_limit,
         source_filter=source_filter,
+        llm_provider=llm_provider,
     )
     return [h["content"] for h in hits if h.get("content")]
 
@@ -97,6 +97,7 @@ def search_diverse_hits(
     top_k_per_source: int = _TOP_K_PER_SOURCE,
     fetch_limit: int = _SEARCH_DIVERSE_FETCH,
     source_filter: Optional[str] = None,
+    llm_provider: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Semantic search returning chunk dicts: content, source, score.
@@ -106,10 +107,12 @@ def search_diverse_hits(
     if not q:
         return []
     try:
-        query_vec = app_embeddings.embed_text(q)
+        query_vec = app_embeddings.embed_text(q, llm_provider=llm_provider)
         if not query_vec:
             return []
-        hits = app_vector_store.search_with_scores(query_vec, limit=fetch_limit)
+        hits = app_vector_store.search_with_scores(
+            query_vec, limit=fetch_limit, llm_provider=llm_provider
+        )
         if not hits:
             return []
         if source_filter:
@@ -150,11 +153,11 @@ def format_chunks_for_prompt(hits: List[Dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def list_sources() -> List[str]:
+def list_sources(llm_provider: Optional[str] = None) -> List[str]:
     """Distinct source labels currently indexed in RAG."""
     seen: set[str] = set()
     sources: List[str] = []
-    for row in list_chunks():
+    for row in list_chunks(llm_provider=llm_provider):
         src = (row.get("source") or "").strip()
         if src and src not in seen:
             seen.add(src)
@@ -182,11 +185,11 @@ def resolve_rag_source_label(
     return None
 
 
-def list_chunks() -> List[Dict[str, Any]]:
+def list_chunks(llm_provider: Optional[str] = None) -> List[Dict[str, Any]]:
     """Return all RAG chunks (id, source, content, created_at) from Qdrant."""
-    return app_vector_store.list_all()
+    return app_vector_store.list_all(llm_provider=llm_provider)
 
 
-def delete_chunks_by_source(source: str) -> None:
+def delete_chunks_by_source(source: str, llm_provider: Optional[str] = None) -> None:
     """Delete all RAG chunks with the given source (e.g. filename). Used for experiment cleanup."""
-    app_vector_store.delete_by_source(source)
+    app_vector_store.delete_by_source(source, llm_provider=llm_provider)

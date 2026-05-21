@@ -1,9 +1,11 @@
 """
-Model router: generate(prompt, model_id) for Ollama local models only.
+Model router: generate(prompt, model_id) for Ollama, Gemini, and OpenAI backends.
 
 Uses LangChain under the hood (core.llm.get_llm) so simple and agentic flows share one stack.
 model_id format:
   - "ollama:llama3.2" or "llama3.2" → local Ollama (OLLAMA_HOST)
+  - "gemini:gemini-2.0-flash" or "google:..." → Google Gemini API (GOOGLE_API_KEY)
+  - "openai:gpt-4o-mini" → OpenAI API (OPENAI_API_KEY)
 """
 from __future__ import annotations
 
@@ -22,18 +24,37 @@ warnings.filterwarnings(
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from core.config import DEFAULT_MODEL
+from core.content_utils import extract_text_content
+from core.gemini_client import (
+    generate_messages as gemini_generate_messages,
+    generate_text as gemini_generate_text,
+    generate_with_images as gemini_generate_with_images,
+)
+from core.openai_client import (
+    generate_messages as openai_generate_messages,
+    generate_text as openai_generate_text,
+    generate_with_images as openai_generate_with_images,
+)
 from core.llm import get_llm
+from core.providers import detect_provider
 
 
-def _options_to_llm_kwargs(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Map request options to get_llm kwargs for Ollama."""
+def _options_to_llm_kwargs(options: Optional[Dict[str, Any]], model_id: Optional[str] = None) -> Dict[str, Any]:
+    """Map request options to get_llm kwargs for Ollama or Gemini."""
     if not options:
         return {}
     out: Dict[str, Any] = {}
+    provider = detect_provider(model_id or "")
     num = options.get("num_predict") or options.get("max_tokens")
     if num is not None:
         try:
-            out["num_predict"] = int(num)
+            n = int(num)
+            if provider == "gemini":
+                out["max_output_tokens"] = n
+            elif provider == "openai":
+                out["max_tokens"] = n
+            else:
+                out["num_predict"] = n
         except (TypeError, ValueError):
             pass
     if "temperature" in options and options["temperature"] is not None:
@@ -41,19 +62,19 @@ def _options_to_llm_kwargs(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             out["temperature"] = float(options["temperature"])
         except (TypeError, ValueError):
             pass
-    if "top_k" in options and options["top_k"] is not None:
+    if "top_k" in options and options["top_k"] is not None and provider not in ("openai",):
         try:
             out["top_k"] = int(options["top_k"])
+        except (TypeError, ValueError):
+            pass
+    if provider == "ollama" and "repeat_penalty" in options and options["repeat_penalty"] is not None:
+        try:
+            out["repeat_penalty"] = float(options["repeat_penalty"])
         except (TypeError, ValueError):
             pass
     if "top_p" in options and options["top_p"] is not None:
         try:
             out["top_p"] = float(options["top_p"])
-        except (TypeError, ValueError):
-            pass
-    if "repeat_penalty" in options and options["repeat_penalty"] is not None:
-        try:
-            out["repeat_penalty"] = float(options["repeat_penalty"])
         except (TypeError, ValueError):
             pass
     return out
@@ -108,11 +129,29 @@ def generate_with_images(
     options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """
-    Send prompt plus one or more local image files to a vision-capable Ollama model.
+    Send prompt plus one or more local image files to a vision-capable model (Ollama or Gemini).
     Returns {"text": str, "thinking": ""}.
     """
     model_id = model_id or DEFAULT_MODEL
-    llm_kwargs = _options_to_llm_kwargs(options)
+    provider = detect_provider(model_id)
+    llm_kwargs = _options_to_llm_kwargs(options, model_id)
+    if provider == "openai":
+        text = openai_generate_with_images(
+            model_id,
+            prompt or "",
+            image_paths,
+            options=llm_kwargs,
+        )
+        return {"text": text or "No text returned.", "thinking": ""}
+    if provider == "gemini":
+        text = gemini_generate_with_images(
+            model_id,
+            prompt or "",
+            image_paths,
+            options=llm_kwargs,
+        )
+        return {"text": text or "No text returned.", "thinking": ""}
+
     llm = get_llm(model_id, **llm_kwargs)
 
     content: List[Dict[str, str]] = [{"type": "text", "text": prompt or ""}]
@@ -129,8 +168,8 @@ def generate_with_images(
         return {"text": "No valid image files provided.", "thinking": ""}
 
     msg = llm.invoke([HumanMessage(content=content)])
-    text = getattr(msg, "content", None) or ""
-    text = (text if isinstance(text, str) else "").strip() or "No text returned."
+    text = extract_text_content(getattr(msg, "content", None))
+    text = text or "No text returned."
     return {"text": text, "thinking": ""}
 
 
@@ -141,16 +180,30 @@ def generate(
     messages: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, str]:
     """
-    Send prompt or messages to Ollama local model.
+    Send prompt or messages to Ollama or Gemini.
     - prompt: single turn (optional if messages is set).
     - messages: multi-turn list of {role, content}; used instead of prompt when set.
     - options: generation options (num_predict, temperature, top_k, top_p, repeat_penalty).
     Returns {"text": str, "thinking": ""} (thinking not supported for Ollama).
     """
     model_id = model_id or DEFAULT_MODEL
-    
-    # Use LangChain ChatOllama
-    llm_kwargs = _options_to_llm_kwargs(options)
+    provider = detect_provider(model_id)
+    llm_kwargs = _options_to_llm_kwargs(options, model_id)
+
+    if provider == "openai":
+        if messages:
+            text = openai_generate_messages(model_id, messages, options=llm_kwargs)
+        else:
+            text = openai_generate_text(model_id, prompt or "", options=llm_kwargs)
+        return {"text": text or "No text returned.", "thinking": ""}
+
+    if provider == "gemini":
+        if messages:
+            text = gemini_generate_messages(model_id, messages, options=llm_kwargs)
+        else:
+            text = gemini_generate_text(model_id, prompt or "", options=llm_kwargs)
+        return {"text": text or "No text returned.", "thinking": ""}
+
     llm = get_llm(model_id, **llm_kwargs)
 
     if messages:
@@ -162,7 +215,7 @@ def generate(
         prompt = prompt or ""
         msg = llm.invoke([HumanMessage(content=prompt)])
 
-    text = getattr(msg, "content", None) or ""
-    text = (text if isinstance(text, str) else "").strip() or "No text returned."
-    
+    text = extract_text_content(getattr(msg, "content", None))
+    text = text or "No text returned."
+
     return {"text": text, "thinking": ""}

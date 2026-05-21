@@ -1,42 +1,44 @@
-# DVAIA: Docker setup with Ollama local models + Qdrant vector store
-# Run: docker compose up --build
-# The ollama service will auto-pull llama3.2 on first startup
+# DVAIA: Docker setup — Ollama (optional) + Qdrant + Flask app
+#
+# IMPORTANT: Run ./run_docker.sh (not plain "docker compose up") for an interactive
+# setup that asks whether to use local Ollama models or cloud (Gemini / OpenAI),
+# with requirements and .env guidance for each option.
+#
+# Quick reference:
+#   ./run_docker.sh              Interactive prompt (recommended)
+#   ./run_docker.sh --local        Local Ollama + model downloads (~9–10 GB disk)
+#   ./run_docker.sh --gemini-only  Cloud Gemini (GOOGLE_API_KEY in .env)
+#   ./run_docker.sh --openai-only  Cloud OpenAI (OPENAI_API_KEY in .env)
+#   ./run_docker.sh --skip-prompt  Use GEMINI_ONLY / OPENAI_ONLY from .env; else local
+#
+# Direct compose (no prompt):
+#   docker compose --profile ollama up --build   # local
+#   docker compose up --build                    # cloud-only if GEMINI_ONLY/OPENAI_ONLY in .env
 services:
   ollama:
+    profiles:
+      - ollama
     networks:
       - dvaia
     image: ollama/ollama:latest
     container_name: dvaia-ollama
     dns:
-      - 8.8.8.8      # Google DNS (fixes registry.ollama.ai resolution)
-      - 1.1.1.1      # Cloudflare DNS
+      - 8.8.8.8
+      - 1.1.1.1
     volumes:
       - ollama_data:/root/.ollama
     ports:
       - "11480:11434"
-    restart: "no" # unless-stopped
+    restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        # Start Ollama in the background
         /bin/ollama serve &
-        # Wait for Ollama to be ready
         sleep 5
-        # Pull llama3.2 if not already present
         ollama pull llama3.2
-        # Pull nomic-embed-text if not already present
         ollama pull nomic-embed-text
-        # Pull qwen3:0.6b for Agentic panel (thinking/CoT)
         ollama pull qwen3:0.6b
-        # Pull qwen2.5vl:7b for Document Injection vision mode
         ollama pull qwen2.5vl:7b
-        # Or pull manually
-        # docker compose exec ollama ollama pull llama3.2
-        # docker compose exec ollama ollama pull nomic-embed-text
-        # docker compose exec ollama ollama pull qwen3:0.6b
-        # docker compose exec ollama ollama pull qwen2.5vl:7b
-        
-        # Keep container running
         wait
 
   qdrant:
@@ -44,10 +46,11 @@ services:
     container_name: dvaia-qdrant
     networks:
       - dvaia
+    volumes:
+      - qdrant_data:/qdrant/storage
     ports:
       - "6333:6333"
-    # No persistent volume: each docker compose up starts with empty vector store.
-    restart: "no" #unless-stopped
+    restart: "no"
 
   dvaia:
     build: .
@@ -60,24 +63,27 @@ services:
       - .env
     environment:
       - PORT=${PORT:-5000}
-      - OLLAMA_HOST=http://ollama:11434
+      - GEMINI_ONLY=${GEMINI_ONLY:-false}
+      - OPENAI_ONLY=${OPENAI_ONLY:-false}
+      - RESET_DATA_ON_START=${RESET_DATA_ON_START:-false}
+      - OLLAMA_HOST=${OLLAMA_HOST:-}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - DEFAULT_MODEL=${DEFAULT_MODEL:-ollama:llama3.2}
       - VISION_MODEL=${VISION_MODEL:-ollama:qwen2.5vl:7b}
+      - AGENTIC_MODEL=${AGENTIC_MODEL:-qwen3:0.6b}
+      - EMBEDDING_BACKEND=${EMBEDDING_BACKEND:-ollama}
       - WHISPER_MODEL=${WHISPER_MODEL:-base}
-      # All data stored in /tmp (cleared when container stops)
-      - DATABASE_URI=/tmp/app.db
-      - UPLOAD_DIR=/tmp/uploads
-      - PAYLOADS_OUTPUT_DIR=/tmp/payloads/generate
+      - DATABASE_URI=${DATABASE_URI:-data/app.db}
+      - UPLOAD_DIR=${UPLOAD_DIR:-data/uploads}
+      - PAYLOADS_OUTPUT_DIR=${PAYLOADS_OUTPUT_DIR:-data/payloads/generate}
     ports:
       - "${PORT:-5000}:5000"
     depends_on:
-      - ollama
       - qdrant
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: "no" #unless-stopped
+    restart: "no"
 
 networks:
   dvaia:
@@ -85,3 +91,4 @@ networks:
 
 volumes:
   ollama_data:
+  qdrant_data:

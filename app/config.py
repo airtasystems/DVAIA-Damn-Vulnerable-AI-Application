@@ -48,9 +48,39 @@ def get_qdrant_url() -> str:
     return os.getenv("QDRANT_URL", "http://localhost:6333").strip()
 
 
+def _default_rag_collection(backend: str) -> str:
+    if backend == "gemini":
+        return "rag_chunks_gemini"
+    if backend == "openai":
+        return "rag_chunks_openai"
+    return "rag_chunks"
+
+
 def get_qdrant_collection() -> str:
-    """Qdrant collection name for RAG chunks. Default: rag_chunks."""
-    return os.getenv("QDRANT_COLLECTION", "rag_chunks").strip()
+    """
+    Qdrant collection name for RAG chunks.
+    When QDRANT_COLLECTION is unset, uses backend-specific default collection.
+    """
+    explicit = os.getenv("QDRANT_COLLECTION", "").strip()
+    if explicit:
+        return explicit
+    backend = os.getenv("EMBEDDING_BACKEND", "ollama").strip().lower()
+    return _default_rag_collection(backend)
+
+
+def get_qdrant_collection_for_provider(llm_provider: Optional[str] = None) -> str:
+    """
+    Qdrant collection for RAG. Uses provider-specific collection unless QDRANT_COLLECTION is set.
+    """
+    explicit = os.getenv("QDRANT_COLLECTION", "").strip()
+    if explicit:
+        return explicit
+    if llm_provider:
+        p = llm_provider.strip().lower()
+        if p in ("gemini", "openai"):
+            return _default_rag_collection(p)
+    backend = os.getenv("EMBEDDING_BACKEND", "ollama").strip().lower()
+    return _default_rag_collection(backend)
 
 
 def get_qdrant_api_key() -> Optional[str]:

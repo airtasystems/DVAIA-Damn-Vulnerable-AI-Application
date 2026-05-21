@@ -10,7 +10,22 @@ from pathlib import Path
 
 from flask import Flask, request, jsonify, render_template, session, send_from_directory
 
-from core.config import get_agentic_model_id, get_default_model_id, get_vision_model_id, get_whisper_model_name
+from core.config import (
+    get_agentic_model_id,
+    get_default_model_id,
+    get_embedding_backend,
+    get_default_llm_provider,
+    get_vision_model_id,
+    get_whisper_model_name,
+    gemini_configured,
+    is_gemini_only_mode,
+    is_openai_only_mode,
+    ollama_enabled,
+    openai_configured,
+    reset_data_on_start_enabled,
+)
+from core.providers import providers_payload, resolve_models_for_provider, detect_provider
+from core.openai_client import clear_openai_client_cache
 
 from app import agent as app_agent
 from app import auth as app_auth
@@ -20,13 +35,36 @@ from app import documents as app_documents
 from app import fetch as app_fetch
 from app import mfa as app_mfa
 from app import retrieval as app_retrieval
-from app.config import get_secret_key
+from app.cache_maintenance import clear_pycache
+from app import embeddings as app_embeddings
+from app import vector_store as app_vector_store
+from app.config import get_secret_key, get_database_uri, get_upload_dir
+from app.settings_store import set_reset_data_on_start
+from core.gemini_client import clear_gemini_client_cache
 from payloads.config import get_output_dir as get_payloads_output_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 
 app = Flask(__name__, template_folder="templates")
 app.config["SECRET_KEY"] = get_secret_key()
+
+_startup_lock = __import__("threading").Lock()
+_startup_applied = False
+
+
+def _apply_startup_reset_once() -> None:
+    global _startup_applied
+    with _startup_lock:
+        if _startup_applied:
+            return
+        _startup_applied = True
+        from app.startup import apply_startup_reset, warmup_llm_backends
+
+        apply_startup_reset()
+        warmup_llm_backends()
+
+
+_apply_startup_reset_once()
 
 
 @app.context_processor
@@ -72,17 +110,68 @@ def api_health():
     return jsonify({"status": "ok"})
 
 
+def _llm_provider_from_request(data: dict | None = None) -> str | None:
+    """Extract llm_provider from JSON body or query string."""
+    p = None
+    if data and data.get("llm_provider"):
+        p = str(data.get("llm_provider")).strip().lower()
+    elif request.args.get("llm_provider"):
+        p = request.args.get("llm_provider", "").strip().lower()
+    if p not in ("ollama", "gemini", "openai"):
+        return None
+    if p == "ollama" and not ollama_enabled():
+        return get_default_llm_provider()
+    return p
+
+
+def _resolve_chat_model_id(data: dict) -> str:
+    """Pick chat model_id from body + provider; avoid Ollama when cloud-only."""
+    llm_provider = _llm_provider_from_request(data)
+    explicit = (data.get("model_id") or "").strip()
+    if llm_provider:
+        provider_models = resolve_models_for_provider(llm_provider)
+        if not explicit or detect_provider(explicit) != llm_provider:
+            return provider_models["chat"]
+    if not ollama_enabled():
+        cloud = get_default_llm_provider()
+        explicit_provider = detect_provider(explicit or _default_model())
+        if explicit_provider == "ollama":
+            return resolve_models_for_provider(cloud)["chat"]
+    return explicit or _default_model()
+
+
 @app.route("/api/models", methods=["GET"])
 def api_models():
-    """Return model_id format, examples, and agentic (thinking) model for /api/chat and /api/agent/chat."""
+    """Return model_id format, provider configs, and role-specific models."""
+    ollama = resolve_models_for_provider("ollama")
+    gemini = resolve_models_for_provider("gemini")
+    openai = resolve_models_for_provider("openai")
     return jsonify({
         "default": _default_model(),
         "agentic_model": get_agentic_model_id(),
         "vision_model": get_vision_model_id(),
         "whisper_model": get_whisper_model_name(),
         "transcription_backend": "whisper",
-        "format": "Use 'model_id' in POST body. Ollama local models: prefix with 'ollama:' (e.g. ollama:llama3.2) or use model name directly",
-        "examples": ["ollama:llama3.2", "llama3.2", "ollama:llama3.1"],
+        "embedding_backend": get_embedding_backend(),
+        "gemini_configured": gemini_configured(),
+        "openai_configured": openai_configured(),
+        "gemini_only": is_gemini_only_mode(),
+        "openai_only": is_openai_only_mode(),
+        "ollama_enabled": ollama_enabled(),
+        "default_provider": get_default_llm_provider(),
+        "providers": providers_payload(),
+        "format": (
+            "Use 'model_id' in POST body. Prefix: ollama: (local), gemini: (Google), or openai: (OpenAI). "
+            "Optional 'llm_provider': ollama|gemini|openai selects provider defaults from Settings."
+        ),
+        "examples": [
+            "ollama:llama3.2",
+            "gemini:gemini-2.0-flash",
+            "openai:gpt-4o-mini",
+            ollama["chat"],
+            gemini["chat"],
+            openai["chat"],
+        ],
     })
 
 
@@ -96,12 +185,16 @@ def api_chat():
     - options: optional dict for generation (max_tokens, num_predict) to cap output length.
     - context_from, document_id, payload_relative_path, context_mode, url, rag_query, rag_source: for indirect-injection tests.
     - context_mode: "extract" (default, OCR/PDF/STT text) or "vision" (image bytes to VISION_MODEL).
+    - vision_model_id: optional override for vision mode (defaults to VISION_MODEL env).
+    - llm_provider: optional ollama|gemini|openai — used for RAG embeddings when indexing/retrieving.
     """
     _ensure_db()
     data = request.get_json() or {}
     prompt = data.get("prompt") or data.get("message", "")
     messages = data.get("messages")
-    model_id = data.get("model_id") or _default_model()
+    llm_provider = _llm_provider_from_request(data)
+    model_id = _resolve_chat_model_id(data)
+    vision_model_id = (data.get("vision_model_id") or "").strip() or None
     options = data.get("options")
     context_from = data.get("context_from")
     context_mode = (data.get("context_mode") or "extract").strip().lower()
@@ -126,6 +219,8 @@ def api_chat():
             url=url,
             rag_query=rag_query,
             rag_source=rag_source,
+            vision_model_id=vision_model_id,
+            llm_provider=llm_provider,
             options=options,
             messages=messages,
         )
@@ -141,6 +236,7 @@ def api_chat():
             "whisper_model": res.get("whisper_model"),
             "rag_source_filter": res.get("rag_source_filter"),
             "rag_chunk_count": res.get("rag_chunk_count"),
+            "llm_provider": res.get("llm_provider"),
             "duration_ms": duration_ms,
         })
     except Exception as e:
@@ -159,7 +255,10 @@ def api_agent_chat():
     prompt = (data.get("prompt") or data.get("message") or "").strip()
     if not prompt:
         return jsonify({"error": "Missing 'prompt' (or 'message') in body"}), 400
-    model_id = data.get("model_id") or _default_model()
+    llm_provider = _llm_provider_from_request(data)
+    model_id = data.get("model_id") or get_agentic_model_id()
+    if llm_provider and not data.get("model_id"):
+        model_id = resolve_models_for_provider(llm_provider)["agentic"]
     messages = data.get("messages")
     if messages is not None and not isinstance(messages, list):
         messages = None
@@ -196,6 +295,7 @@ def api_agent_chat():
             "thinking": res.get("thinking", ""),
             "messages": res.get("messages", []),
             "tool_calls": res.get("tool_calls", []),
+            "llm_provider": llm_provider or None,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -218,7 +318,10 @@ def api_chat_with_template():
     data = request.get_json() or {}
     template = data.get("template", "")
     user_input = data.get("user_input", "")
+    llm_provider = _llm_provider_from_request(data)
     model_id = data.get("model_id") or _default_model()
+    if llm_provider and not data.get("model_id"):
+        model_id = resolve_models_for_provider(llm_provider)["chat"]
     if not template.strip():
         return jsonify({"error": "Missing 'template' in body"}), 400
     user_id = _user_id_from_session()
@@ -228,6 +331,7 @@ def api_chat_with_template():
             prompt=constructed,
             user_id=user_id,
             model_id=model_id,
+            llm_provider=llm_provider,
         )
         return jsonify({
             "response": res["text"],
@@ -465,19 +569,22 @@ def api_rag_retrieve_preview():
     _ensure_db()
     q = (request.args.get("q") or "").strip()
     rag_source = (request.args.get("rag_source") or "").strip() or None
+    llm_provider = _llm_provider_from_request()
     if not q:
         return jsonify({
             "chunks": [],
             "formatted_preview": "",
             "rag_source": rag_source,
             "warning": "Enter a query to preview retrieval.",
-            "sources": app_retrieval.list_sources(),
+            "sources": app_retrieval.list_sources(llm_provider=llm_provider),
         })
-    hits = app_retrieval.search_diverse_hits(q, source_filter=rag_source)
+    hits = app_retrieval.search_diverse_hits(
+        q, source_filter=rag_source, llm_provider=llm_provider
+    )
     formatted = app_retrieval.format_chunks_for_prompt(hits)
     warning = None
     if rag_source and not hits:
-        sources = app_retrieval.list_sources()
+        sources = app_retrieval.list_sources(llm_provider=llm_provider)
         warning = (
             f"No chunks matched for source '{rag_source}'. "
             f"Indexed sources: {', '.join(sources) if sources else '(none)'}"
@@ -494,7 +601,7 @@ def api_rag_retrieve_preview():
         "formatted_preview": formatted,
         "rag_source": rag_source,
         "warning": warning,
-        "sources": app_retrieval.list_sources() if not hits else None,
+        "sources": app_retrieval.list_sources(llm_provider=llm_provider) if not hits else None,
     })
 
 
@@ -520,14 +627,15 @@ def api_rag_chunks_list():
 
 @app.route("/api/rag/chunks", methods=["POST"])
 def api_rag_chunks_add():
-    """Add a chunk to the RAG index. Body: source (optional), content."""
+    """Add a chunk to the RAG index. Body: source (optional), content, optional llm_provider."""
     _ensure_db()
     data = request.get_json() or {}
     source = (data.get("source") or "").strip() or "manual"
     content = (data.get("content") or "").strip()
     if not content:
         return jsonify({"error": "Missing or empty 'content'"}), 400
-    chunk_id = app_retrieval.add_chunk(source, content)
+    llm_provider = _llm_provider_from_request(data)
+    chunk_id = app_retrieval.add_chunk(source, content, llm_provider=llm_provider)
     return jsonify({"id": chunk_id})
 
 
@@ -536,6 +644,8 @@ def api_rag_add_document(document_id):
     """Add a document to RAG: split into chunks, embed each, store. Returns number of chunks added."""
     _ensure_db()
     user_id = _user_id_from_session()
+    data = request.get_json(silent=True) or {}
+    llm_provider = _llm_provider_from_request(data)
     doc = app_documents.get_document(document_id, user_id)
     if not doc:
         return jsonify({"error": "Document not found"}), 404
@@ -545,7 +655,7 @@ def api_rag_add_document(document_id):
             "error": "Document has no extracted text. Use .txt, or install PyPDF2 for PDF, python-docx for DOCX, pytesseract + tesseract-ocr for images.",
         }), 400
     source = doc.get("filename") or f"document_{document_id}"
-    chunks_added = app_retrieval.add_document(source, text)
+    chunks_added = app_retrieval.add_document(source, text, llm_provider=llm_provider)
     return jsonify({
         "chunks_added": chunks_added,
         "source": source,
@@ -565,7 +675,8 @@ def api_rag_add_payload():
     if not text:
         return jsonify({"error": "Payload file not found or has no extracted text."}), 400
     source = relative_path.replace("\\", "/")
-    chunks_added = app_retrieval.add_document(source, text)
+    llm_provider = _llm_provider_from_request(data)
+    chunks_added = app_retrieval.add_document(source, text, llm_provider=llm_provider)
     return jsonify({
         "chunks_added": chunks_added,
         "source": source,
@@ -586,6 +697,109 @@ def api_rag_delete_by_source():
         return jsonify({"error": "Missing or empty 'source'"}), 400
     app_retrieval.delete_chunks_by_source(source)
     return jsonify({"ok": True})
+
+
+@app.route("/api/settings", methods=["GET"])
+def api_settings_get():
+    """Runtime settings for the Settings panel (persistence, paths)."""
+    db_uri = get_database_uri()
+    upload_dir = get_upload_dir()
+    ephemeral = db_uri.startswith("/tmp") or upload_dir.startswith("/tmp")
+    return jsonify({
+        "reset_data_on_start": reset_data_on_start_enabled(),
+        "database_uri": db_uri,
+        "upload_dir": upload_dir,
+        "using_ephemeral_storage": ephemeral,
+        "gemini_only": is_gemini_only_mode(),
+        "openai_only": is_openai_only_mode(),
+        "note": (
+            "When reset_data_on_start is false, document DB, uploads, and Qdrant data "
+            "persist across restarts (use data/ paths and a Qdrant volume in Docker)."
+        ),
+    })
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_settings_update():
+    """Update settings from the UI. Body: { reset_data_on_start: bool }."""
+    data = request.get_json(silent=True) or {}
+    result = {}
+    if "reset_data_on_start" in data:
+        result = set_reset_data_on_start(bool(data["reset_data_on_start"]))
+    payload = {
+        "ok": True,
+        "reset_data_on_start": reset_data_on_start_enabled(),
+        "database_uri": get_database_uri(),
+        "upload_dir": get_upload_dir(),
+        "using_ephemeral_storage": get_database_uri().startswith("/tmp") or get_upload_dir().startswith("/tmp"),
+        **result,
+    }
+    if result:
+        payload["message"] = (
+            "Restart the app for the reset-on-start behavior to take effect on next boot."
+        )
+    return jsonify(payload)
+
+
+@app.route("/api/settings/clear-cache", methods=["POST"])
+def api_settings_clear_cache():
+    """
+    Clear runtime or persisted caches. Body: { "target": "rag" | "gemini" | "openai" | "pycache" }.
+    """
+    data = request.get_json(silent=True) or {}
+    target = (data.get("target") or "").strip().lower()
+    if target not in ("rag", "gemini", "openai", "pycache"):
+        return jsonify({"error": "target must be rag, gemini, openai, or pycache"}), 400
+
+    try:
+        if target == "rag":
+            collections = app_vector_store.reset_all_rag_collections()
+            if collections:
+                message = "RAG index cleared."
+            else:
+                message = "RAG index already empty (no collections found in Qdrant)."
+            return jsonify({
+                "ok": True,
+                "target": target,
+                "message": message,
+                "collections": collections,
+            })
+
+        if target == "gemini":
+            clear_gemini_client_cache()
+            app_embeddings.clear_embeddings_cache()
+            return jsonify({
+                "ok": True,
+                "target": target,
+                "message": "Gemini client and embedding cache cleared.",
+            })
+
+        if target == "openai":
+            clear_openai_client_cache()
+            app_embeddings.clear_embeddings_cache()
+            return jsonify({
+                "ok": True,
+                "target": target,
+                "message": "OpenAI client and embedding cache cleared.",
+            })
+
+        removed = clear_pycache()
+        if removed:
+            message = f"Removed {len(removed)} __pycache__ director{'y' if len(removed) == 1 else 'ies'}."
+        else:
+            message = (
+                "No __pycache__ directories found under the project "
+                "(normal when PYTHONDONTWRITEBYTECODE=1 in Docker)."
+            )
+        return jsonify({
+            "ok": True,
+            "target": target,
+            "message": message,
+            "paths": removed[:50],
+            "truncated": len(removed) > 50,
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc), "target": target}), 500
 
 
 @app.route("/evil/")

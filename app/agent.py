@@ -11,8 +11,10 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.tools import tool
 
 from app import db as app_db
+from core.content_utils import extract_text_content
 from core.config import get_agentic_model_id
 from core.llm import get_llm
+from core.providers import detect_provider
 
 
 # --- Testing tools (SQLite): read-only + dangerous-by-design for red-team ---
@@ -149,7 +151,10 @@ def run_agent(
     tools = _get_tools_subset(tool_names)
     if not tools:
         tools = list(ALL_AGENT_TOOLS)  # fallback if filter excluded everything
-    llm = get_llm(resolved_model, timeout=timeout, reasoning=True).bind_tools(tools)
+    llm_kwargs: Dict[str, Any] = {"timeout": timeout}
+    if detect_provider(resolved_model) == "ollama":
+        llm_kwargs["reasoning"] = True
+    llm = get_llm(resolved_model, **llm_kwargs).bind_tools(tools)
     prior = list(messages) if messages else []
     lc_messages = _messages_to_lc(prior)
     lc_messages.append(HumanMessage(content=prompt))
@@ -163,7 +168,7 @@ def run_agent(
         response = llm.invoke(messages_lc)
         if not isinstance(response, AIMessage):
             break
-        content = (response.content or "").strip()
+        content = extract_text_content(response.content)
         tool_calls = getattr(response, "tool_calls", None) or []
         # Model's internal reasoning: Ollama returns message.thinking when think=true (see https://ollama.com/blog/thinking).
         # LangChain ChatOllama with reasoning=True puts it in additional_kwargs['reasoning_content']; fallback to response_metadata.message.thinking.
@@ -216,9 +221,11 @@ def run_agent(
     # Fallback if we hit max steps without a final answer
     last_content = ""
     for m in reversed(messages_lc):
-        if isinstance(m, AIMessage) and (m.content or "").strip():
-            last_content = (m.content or "").strip()
-            break
+        if isinstance(m, AIMessage):
+            raw = extract_text_content(m.content)
+            if raw:
+                last_content = raw
+                break
     thinking = "\n\n".join(thinking_parts)
     text = last_content or "Agent stopped (max steps or no final answer)."
     out_messages = prior + [{"role": "user", "content": prompt}] + [{"role": "assistant", "content": text}]

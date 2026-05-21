@@ -33,12 +33,28 @@ OLLAMA_HOST = "http://localhost:11480"  # override with env OLLAMA_HOST
 # Runner and Docker: base URL and port from .env (no hardcoded localhost in code)
 REDTEAM_API_URL_DEFAULT = "http://127.0.0.1:5000"
 PORT_DEFAULT = 5000
-# Embedding backend: ollama
+# Embedding backend: ollama | gemini | openai
 EMBEDDING_BACKEND = "ollama"
 # Embedding model for RAG (Ollama model name, e.g. nomic-embed-text)
 EMBEDDING_MODEL = "nomic-embed-text"
-# Ollama embedding model
+# Gemini embedding model (when EMBEDDING_BACKEND=gemini)
 EMBEDDING_MODEL_GEMINI = "text-embedding-004"
+# OpenAI embedding model (when EMBEDDING_BACKEND=openai)
+EMBEDDING_MODEL_OPENAI = "text-embedding-3-small"
+# Gemini cloud models (prefix with gemini: at runtime)
+GEMINI_CHAT_MODEL = "gemini-2.0-flash"
+GEMINI_VISION_MODEL = "gemini-2.0-flash"
+GEMINI_AGENTIC_MODEL = "gemini-2.0-flash"
+# OpenAI cloud models (prefix with openai: at runtime)
+OPENAI_CHAT_MODEL = "gpt-4o-mini"
+OPENAI_VISION_MODEL = "gpt-4o"
+OPENAI_AGENTIC_MODEL = "gpt-4o-mini"
+# When true: skip Ollama (Docker profile, UI defaults to Gemini). Requires GOOGLE_API_KEY.
+GEMINI_ONLY = False
+# When true: skip Ollama (Docker profile, UI defaults to OpenAI). Requires OPENAI_API_KEY.
+OPENAI_ONLY = False
+# When true: wipe SQLite, document uploads, and RAG collections on each app start (lab reset mode).
+RESET_DATA_ON_START = False
 
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
@@ -221,21 +237,150 @@ def get_ollama_host() -> str:
 
 
 def get_embedding_backend() -> str:
-    """Embedding backend for RAG: ollama only. Used by app.embeddings."""
+    """Embedding backend for RAG: ollama, gemini, or openai."""
     _ensure_env_loaded()
-    return os.getenv("EMBEDDING_BACKEND", EMBEDDING_BACKEND).strip().lower()
+    backend = os.getenv("EMBEDDING_BACKEND", EMBEDDING_BACKEND).strip().lower()
+    return backend if backend in ("ollama", "gemini", "openai") else "ollama"
 
 
 def get_embedding_model_id() -> str:
-    """Embedding model for RAG (e.g. nomic-embed-text). Used by app.embeddings when backend is ollama."""
+    """Embedding model for RAG (e.g. nomic-embed-text). Used when backend is ollama."""
     _ensure_env_loaded()
     return os.getenv("EMBEDDING_MODEL", EMBEDDING_MODEL)
 
 
-def get_ollama_embedding_model() -> str:
-    """Ollama embedding model. Used for RAG embeddings."""
+def get_gemini_embedding_model() -> str:
+    """Gemini embedding model. Used when EMBEDDING_BACKEND=gemini."""
     _ensure_env_loaded()
-    return os.getenv("EMBEDDING_MODEL_GEMINI", EMBEDDING_MODEL_GEMINI)
+    return os.getenv("EMBEDDING_MODEL_GEMINI", EMBEDDING_MODEL_GEMINI).strip() or EMBEDDING_MODEL_GEMINI
+
+
+def get_openai_embedding_model() -> str:
+    """OpenAI embedding model. Used when EMBEDDING_BACKEND=openai."""
+    _ensure_env_loaded()
+    return os.getenv("EMBEDDING_MODEL_OPENAI", EMBEDDING_MODEL_OPENAI).strip() or EMBEDDING_MODEL_OPENAI
+
+
+def get_openai_api_key() -> Optional[str]:
+    """OpenAI API key from OPENAI_API_KEY."""
+    _ensure_env_loaded()
+    val = os.getenv("OPENAI_API_KEY", "").strip()
+    return val or None
+
+
+def openai_configured() -> bool:
+    """True when OPENAI_API_KEY is set."""
+    return bool(get_openai_api_key())
+
+
+def get_google_api_key() -> Optional[str]:
+    """Google AI Studio API key for Gemini. From GOOGLE_API_KEY or GEMINI_API_KEY."""
+    _ensure_env_loaded()
+    val = (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+    return val or None
+
+
+def gemini_configured() -> bool:
+    """True when a Google API key is set for Gemini cloud calls."""
+    return bool(get_google_api_key())
+
+
+def is_gemini_only_mode() -> bool:
+    """When True, local Ollama LLM is disabled; app expects Gemini for chat/RAG/agentic."""
+    _ensure_env_loaded()
+    val = os.getenv("GEMINI_ONLY", "false").strip().lower()
+    return val in ("1", "true", "yes")
+
+
+def is_openai_only_mode() -> bool:
+    """When True, local Ollama LLM is disabled; app expects OpenAI for chat/RAG/agentic."""
+    _ensure_env_loaded()
+    val = os.getenv("OPENAI_ONLY", "false").strip().lower()
+    return val in ("1", "true", "yes")
+
+
+def ollama_enabled() -> bool:
+    """False when GEMINI_ONLY or OPENAI_ONLY (no local Ollama container expected)."""
+    return not (is_gemini_only_mode() or is_openai_only_mode())
+
+
+def get_default_llm_provider() -> str:
+    """UI/API default provider from cloud-only flags or DEFAULT_LLM_PROVIDER."""
+    if is_openai_only_mode():
+        return "openai"
+    if is_gemini_only_mode():
+        return "gemini"
+    _ensure_env_loaded()
+    default = os.getenv("DEFAULT_LLM_PROVIDER", "ollama").strip().lower()
+    if default == "openai" and openai_configured():
+        return "openai"
+    if default == "gemini" and gemini_configured():
+        return "gemini"
+    return "ollama"
+
+
+def reset_data_on_start_enabled() -> bool:
+    """
+    When True, wipe document DB, uploads, and RAG on each app/worker start.
+    UI override in data/dvaia_settings.json takes precedence; legacy RESET_DB_ON_START=1 also enables.
+    """
+    try:
+        from app.settings_store import get_ui_reset_data_on_start_override
+
+        override = get_ui_reset_data_on_start_override()
+        if override is not None:
+            return override
+    except ImportError:
+        pass
+
+    _ensure_env_loaded()
+    if os.getenv("RESET_DB_ON_START", "").strip() == "1":
+        return True
+    val = os.getenv("RESET_DATA_ON_START", "false").strip().lower()
+    if val in ("1", "true", "yes"):
+        return True
+    return bool(RESET_DATA_ON_START)
+
+
+def get_gemini_chat_model() -> str:
+    """Default Gemini chat model name (without prefix)."""
+    _ensure_env_loaded()
+    return os.getenv("GEMINI_CHAT_MODEL", GEMINI_CHAT_MODEL).strip() or GEMINI_CHAT_MODEL
+
+
+def get_gemini_vision_model() -> str:
+    """Default Gemini vision/multimodal model name (without prefix)."""
+    _ensure_env_loaded()
+    return os.getenv("GEMINI_VISION_MODEL", GEMINI_VISION_MODEL).strip() or GEMINI_VISION_MODEL
+
+
+def get_gemini_agentic_model() -> str:
+    """Default Gemini model for agentic tool-use loop (without prefix)."""
+    _ensure_env_loaded()
+    return os.getenv("GEMINI_AGENTIC_MODEL", GEMINI_AGENTIC_MODEL).strip() or GEMINI_AGENTIC_MODEL
+
+
+def get_openai_chat_model() -> str:
+    """Default OpenAI chat model name (without prefix)."""
+    _ensure_env_loaded()
+    return os.getenv("OPENAI_CHAT_MODEL", OPENAI_CHAT_MODEL).strip() or OPENAI_CHAT_MODEL
+
+
+def get_openai_vision_model() -> str:
+    """Default OpenAI vision model name (without prefix)."""
+    _ensure_env_loaded()
+    return os.getenv("OPENAI_VISION_MODEL", OPENAI_VISION_MODEL).strip() or OPENAI_VISION_MODEL
+
+
+def get_openai_agentic_model() -> str:
+    """Default OpenAI model for agentic tool-use loop (without prefix)."""
+    _ensure_env_loaded()
+    return os.getenv("OPENAI_AGENTIC_MODEL", OPENAI_AGENTIC_MODEL).strip() or OPENAI_AGENTIC_MODEL
+
+
+def get_ollama_embedding_model() -> str:
+    """Deprecated alias for get_embedding_model_id()."""
+    return get_embedding_model_id()
 
 
 def _require_path(env_key: str) -> str:

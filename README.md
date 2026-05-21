@@ -2,7 +2,7 @@
 
 **Interactive web interface for manual LLM security testing and vulnerability exploration.**
 
-DVAIA is similar to DVWA (Damn Vulnerable Web Application) but designed specifically for testing LLM vulnerabilities. It provides a hands-on environment to explore prompt injection, indirect attacks, and other AI security issues using Ollama local models.
+DVAIA is similar to DVWA (Damn Vulnerable Web Application) but designed specifically for testing LLM vulnerabilities. It provides a hands-on environment to explore prompt injection, indirect attacks, and other AI security issues using **local Ollama models**, **Google Gemini**, or **OpenAI** (cloud).
 
 ---
 
@@ -11,7 +11,7 @@ DVAIA is similar to DVWA (Damn Vulnerable Web Application) but designed specific
 **What is DVAIA?**
 - Web UI for **manual exploration** of LLM vulnerabilities
 - Runs on **http://127.0.0.1:5000** (Flask app)
-- Uses **Ollama local models** (no external API dependencies)
+- **Local (Ollama)**, **Cloud (Gemini)**, or **Cloud (OpenAI)** — Settings backend toggle; cloud-only Docker modes skip Ollama entirely
 - Educational platform for understanding LLM attack vectors
 - 8 interactive panels (7 attack vectors + Agentic testing with multi-round conversation)
 
@@ -26,25 +26,41 @@ The easiest way to run DVAIA with all dependencies:
 ```bash
 # Clone the repository
 git clone https://github.com/genbounty/DVAIA.git
-- OR
-git clone git@github.com:genbounty/DVAIA.git
+# or: git clone git@github.com:genbounty/DVAIA.git
 cd DVAIA
 
-# Option A: Use the convenience script
+# Configure environment (required for Gemini-only; optional for Ollama)
+cp .env.example .env
+
+# Option A: Full stack — Ollama + Qdrant + app (interactive setup on first run)
 ./run_docker.sh
-- OR
-sudo ./run-docker.sh
+# Prompts: local Ollama vs cloud (Gemini/OpenAI), with disk/RAM and .env requirements
 
-# Option B: Use docker compose directly
-docker compose up -d --build
+# Option A2: Gemini-only — no Ollama (set GOOGLE_API_KEY in .env first)
+./run_docker.sh --gemini-only
 
-# Models will auto-download on first start (llama3.2, nomic-embed-text, qwen3:0.6b, qwen2.5vl:7b — several minutes)
-# Watch progress:
-docker compose logs -f ollama
+# Option A3: OpenAI-only — no Ollama (set OPENAI_API_KEY in .env first)
+./run_docker.sh --openai-only
+# or set OPENAI_ONLY=true in .env and run ./run_docker.sh
 
-# Access the application
-# http://127.0.0.1:5000
+# Option B: docker compose directly
+docker compose --profile ollama up --build    # with Ollama
+docker compose up --build                     # cloud-only (GEMINI_ONLY or OPENAI_ONLY in .env)
+
+# With Ollama: models auto-download on first start
+# (llama3.2, nomic-embed-text, qwen3:0.6b, qwen2.5vl:7b — several minutes, ~10GB+ total)
+docker compose --profile ollama logs -f ollama
+
+# Access the application at http://127.0.0.1:5000
 ```
+
+| Mode | Command | Ollama container | Local LLM downloads |
+|------|---------|------------------|---------------------|
+| **Full stack** | `./run_docker.sh` | Yes | Yes (on first start) |
+| **Gemini-only** | `./run_docker.sh --gemini-only` | No | No |
+| **OpenAI-only** | `./run_docker.sh --openai-only` | No | No |
+
+Whisper (audio STT) and OCR still run locally in the app container in both modes.
 
 **Stop the application:**
 
@@ -56,6 +72,8 @@ docker compose down  # Stops and clears all data
 
 For development or if you prefer running locally:
 
+**With Ollama (default):**
+
 ```bash
 # 1. Create and activate virtual environment
 python3 -m venv venv
@@ -64,23 +82,28 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Start Ollama (separate terminal)
+# 3. Copy and edit config
+cp .env.example .env
+
+# 4. Start Ollama (separate terminal)
 ollama serve
 
-# 4. Pull required models
+# 5. Pull required models
 ollama pull llama3.2
 ollama pull nomic-embed-text  # For RAG features
 ollama pull qwen3:0.6b        # For Agentic panel (thinking/CoT)
+ollama pull qwen2.5vl:7b       # For Document Injection vision mode
 
-# 5. Start Qdrant (separate terminal)
+# 6. Start Qdrant (separate terminal)
 docker run -p 6333:6333 qdrant/qdrant
 
-# 6. Start the Flask app
+# 7. Start the Flask app
 python -m api
 
-# Access the application
-# http://127.0.0.1:5000
+# Access at http://127.0.0.1:5000
 ```
+
+**Gemini-only (no Ollama):** set `GOOGLE_API_KEY`, `GEMINI_ONLY=true`, and Gemini model vars in `.env`, start Qdrant + `python -m api`, then use **Cloud (Gemini)** in the UI (or let `GEMINI_ONLY` default the provider).
 
 **For production deployment:**
 
@@ -91,13 +114,69 @@ gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 120 api.server:app
 
 ---
 
-## 🔧 Using other local models
+## 🔧 Using local (Ollama) or cloud (Gemini / OpenAI) models
 
-DVAIA uses **Ollama** for all LLM and embedding calls. You can switch to any model you have pulled locally by setting environment variables.
+### Model configuration
 
-### Default model (main panels)
+DVAIA defaults to **Ollama** for LLM calls and embeddings. Use **Google Gemini** or **OpenAI** when you lack local GPU/RAM or prefer cloud speed — choose the backend in **Settings**, or run a **cloud-only Docker** mode to skip Ollama entirely.
 
-The **Direct Injection**, **Document Injection**, **Web Injection**, **RAG**, and **Template Injection** panels use the same default model. Set it in `.env`:
+Whisper transcription and OCR always run locally regardless of the LLM backend.
+
+### Gemini cloud backend
+
+Get an API key from [Google AI Studio](https://aistudio.google.com/apikey), then add to `.env`:
+
+```bash
+GOOGLE_API_KEY=your-key-here
+GEMINI_CHAT_MODEL=gemini-3-flash-preview
+GEMINI_VISION_MODEL=gemini-3-flash-preview
+GEMINI_AGENTIC_MODEL=gemini-3-flash-preview
+EMBEDDING_BACKEND=gemini          # required for RAG when using Gemini embeddings
+EMBEDDING_MODEL_GEMINI=text-embedding-004
+```
+
+### OpenAI cloud backend
+
+Get an API key from [OpenAI](https://platform.openai.com/api-keys), then add to `.env`:
+
+```bash
+OPENAI_API_KEY=your-key-here
+OPENAI_CHAT_MODEL=gpt-4o-mini
+OPENAI_VISION_MODEL=gpt-4o
+OPENAI_AGENTIC_MODEL=gpt-4o-mini
+EMBEDDING_BACKEND=openai           # required for RAG when using OpenAI embeddings
+EMBEDDING_MODEL_OPENAI=text-embedding-3-small
+```
+
+Use the **Backend** option in **Settings** (sidebar). Model IDs use prefixes: `ollama:llama3.2`, `gemini:gemini-3-flash-preview`, or `openai:gpt-4o-mini`. When switching RAG embedding backends, re-add documents — Ollama uses `rag_chunks`, Gemini uses `rag_chunks_gemini`, OpenAI uses `rag_chunks_openai` (unless `QDRANT_COLLECTION` is set explicitly).
+
+### Cloud-only mode (Docker)
+
+For machines that cannot run local LLMs (~10GB+ downloads):
+
+**Gemini-only:**
+
+```bash
+cp .env.example .env
+# Edit .env: GOOGLE_API_KEY, GEMINI_ONLY=true, EMBEDDING_BACKEND=gemini, GEMINI_*_MODEL vars
+
+./run_docker.sh --gemini-only
+```
+
+**OpenAI-only:**
+
+```bash
+cp .env.example .env
+# Edit .env: OPENAI_API_KEY, OPENAI_ONLY=true, EMBEDDING_BACKEND=openai, OPENAI_*_MODEL vars
+
+./run_docker.sh --openai-only
+```
+
+This starts **Qdrant + DVAIA only** — no Ollama container, no `ollama pull`. The UI locks to the selected cloud backend. Whisper/OCR still run in the app container for audio/image extract mode.
+
+### Default model (main panels — Ollama)
+
+The **Direct Injection**, **Document Injection**, **Web Injection**, **RAG**, and **Template Injection** panels use the same default model when **Local (Ollama)** is selected. Set it in `.env`:
 
 ```bash
 # .env
@@ -137,7 +216,7 @@ Pull the model, then set `AGENTIC_MODEL` to that name. The UI and `/api/models` 
 VISION_MODEL=ollama:qwen2.5vl:7b
 ```
 
-Docker Compose auto-pulls `qwen2.5vl:7b` on first start (~6GB).
+Docker Compose (Ollama profile) auto-pulls `qwen2.5vl:7b` on first start (~6GB). Not used in Gemini-only mode.
 
 | Mode | File types | Pipeline |
 |------|------------|----------|
@@ -160,22 +239,29 @@ The Docker image pre-downloads the `base` model (~150MB). First transcription ou
 
 ### RAG embeddings
 
-RAG uses an embedding model (default: **nomic-embed-text**). Override in `.env` if needed:
+**Ollama (default):** uses `nomic-embed-text`. Override in `.env`:
 
 ```bash
-# EMBEDDING_MODEL=nomic-embed-text   # default
+EMBEDDING_BACKEND=ollama
+EMBEDDING_MODEL=nomic-embed-text
 ollama pull nomic-embed-text
 ```
 
+**Gemini:** set `EMBEDDING_BACKEND=gemini` and use the Cloud toggle (or `GEMINI_ONLY=true`). Re-index documents after switching backends.
+
 ### Summary
 
-| Use case              | Env variable     | Default           |
+| Use case              | Env variable     | Default (Ollama)  |
 |-----------------------|------------------|-------------------|
 | Chat (all main panels)| `DEFAULT_MODEL`  | `ollama:llama3.2` |
 | Agentic (tools + CoT) | `AGENTIC_MODEL`  | `qwen3:0.6b`      |
 | Document Injection vision (images) | `VISION_MODEL` | `ollama:qwen2.5vl:7b` |
 | Document Injection audio (STT) | `WHISPER_MODEL` | `base` |
-| RAG embeddings        | `EMBEDDING_MODEL`| `nomic-embed-text`|
+| RAG embeddings (Ollama) | `EMBEDDING_MODEL`| `nomic-embed-text`|
+| RAG embeddings (Gemini) | `EMBEDDING_MODEL_GEMINI` | `text-embedding-004` |
+| Gemini chat/vision/agentic | `GEMINI_*_MODEL` | see `.env.example` |
+| Gemini API key        | `GOOGLE_API_KEY` | (unset)           |
+| Skip Ollama in Docker | `GEMINI_ONLY`    | `false`           |
 
 Copy `.env.example` to `.env`, uncomment and set the variables you want. Restart the app after changing `.env`.
 
@@ -189,8 +275,8 @@ Copy `.env.example` to `.env`, uncomment and set the variables you want. Restart
 Test prompts directly with no context injection.
 
 **Features:**
-- Model selection (Ollama local models: llama3.2, llama3.1, etc.)
-- Advanced sampling controls:
+- Model selection via **Settings → Backend** (Local Ollama or Cloud Gemini)
+- Advanced sampling controls (Ollama; some options may not apply to Gemini):
   - **Temperature** (0-2): Randomness; use 1.2-2 for diverse jailbreaks
   - **Top K** (1-200): Token sampling; 100-200 for variety
   - **Top P** (0-1): Nucleus sampling; 0.9-1 for evasions
@@ -382,7 +468,7 @@ ReAct-style agent with **6 SQLite-backed tools** (read + dangerous-by-design) fo
 
 **Use case:** Test agent/tool-use security (prompt injection to misuse tools, data exfiltration, multi-turn jailbreaks). CoT visibility helps explain model decisions.
 
-**Docker:** The ollama service auto-pulls **qwen3:0.6b** on first start. Override the Agentic model with **AGENTIC_MODEL** in `.env` (see [Using other local models](#using-other-local-models) below).
+**Docker (Ollama profile):** auto-pulls **qwen3:0.6b** on first start. Override with **AGENTIC_MODEL** in `.env` (see [model configuration](#model-configuration) above). Gemini-only mode uses **GEMINI_AGENTIC_MODEL** instead.
 
 ---
 
@@ -528,7 +614,7 @@ ReAct-style agent with **6 SQLite-backed tools** (read + dangerous-by-design) fo
 
 **Dual-Tab Interface:**
 - **Answer**: Model response (always visible)
-- **Thinking**: Internal reasoning (not supported in Ollama)
+- **Thinking**: Internal reasoning (Agentic panel with thinking models; Gemini CoT when available)
 
 **Terminal Sidebar:**
 - Shows experiment output
@@ -582,7 +668,7 @@ Max tokens 100-500: Quick refusal checks
 - **Manual exploration** of LLM vulnerabilities
 - **Custom payload** development
 - **Attack chaining** across multiple vectors
-- **Model comparison** (different Ollama models)
+- **Model comparison** (Ollama vs Gemini, or different local models)
 
 ### For Developers
 - **Understand risks** in LLM integrations
@@ -609,7 +695,7 @@ Max tokens 100-500: Quick refusal checks
 ### 1. Start the Server
 
 ```bash
-cd red-team-agent
+cd DVAIA
 python -m api
 ```
 
@@ -707,46 +793,46 @@ python -m api  # Listens on 127.0.0.1:5000
 
 ## 🔧 Configuration
 
-### Environment Variables
-
-
-
-### Docker Setup
+See [`.env.example`](.env.example) for all variables with comments. Common settings:
 
 ```bash
-# With Ollama + Qdrant (auto-pulls llama3.2 on first start)
-docker compose up --build
-
-# Access UI
-# http://127.0.0.1:5000
-
-##.env
+cp .env.example .env
 ```
-#Set for local dev servers (Flask etc.) that don't support HTTP/2 to avoid
-# "Empty reply from server" (curl error 52).
-REDTEAM_HTTP_VERSION=v1
 
-REDTEAM_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+| Variable | Purpose |
+|----------|---------|
+| `PORT` | Flask listen port (default `5000`) |
+| `GEMINI_ONLY` | Docker: skip Ollama container and local LLM downloads |
+| `GOOGLE_API_KEY` | Enables Cloud (Gemini) backend |
+| `OPENAI_API_KEY` | Enables Cloud (OpenAI) backend |
+| `DEFAULT_MODEL` | Chat model for main panels |
+| `AGENTIC_MODEL` | Agentic panel model |
+| `VISION_MODEL` | Document Injection vision mode |
+| `WHISPER_MODEL` | Local audio transcription |
+| `EMBEDDING_BACKEND` | RAG embeddings: `ollama` or `gemini` |
+| `OLLAMA_HOST` | Ollama URL (local dev: `http://localhost:11480`; Docker Ollama profile sets `http://ollama:11434`) |
+| `QDRANT_URL` | Qdrant URL (Docker sets `QDRANT_HOST=qdrant` internally) |
+| `SECRET_KEY` | Flask session secret (generate for production) |
 
-#CHAT_PATH="/api/chat"
-#CHAT_WITH_CONTEXT_PATH="/api/chat"
+### Docker modes
 
-#DOCUMENT_PATH="/api/documents/upload"
-#RAG_ADD_DOCUMENT_PATH="/api/rag/add-document"
+```bash
+# Full stack — Ollama pulls models on first start
+./run_docker.sh
+docker compose --profile ollama up --build
 
-# Optional: port for the Flask app (default 5000)
-PORT=5000
-# Ollama host for local models (Docker sets OLLAMA_HOST=http://ollama:11434)
-#OLLAMA_HOST=http://localhost:11480
-DEFAULT_MODEL=ollama:llama3.2
-EMBEDDING_BACKEND=ollama
----
+# Gemini-only — no Ollama, requires GOOGLE_API_KEY in .env
+./run_docker.sh --gemini-only
+docker compose up --build   # with GEMINI_ONLY=true in .env
+```
+
+For AWS/production deployment details, see [`AWS_DEPLOY.md`](AWS_DEPLOY.md).
 
 ## 📊 Performance Tips
 
 ### Model Selection
 
-Model choice is configured via [Using other local models](#using-other-local-models): **DEFAULT_MODEL** for chat panels, **AGENTIC_MODEL** for the Agentic panel.
+Model choice is configured via environment variables (see [model configuration](#model-configuration)): **DEFAULT_MODEL** for chat panels, **AGENTIC_MODEL** for the Agentic panel, **GEMINI_*_MODEL** when using Cloud (Gemini).
 
 **Ollama local models (examples):**
 - `llama3.2`: Default, good balance of speed and capability
@@ -863,9 +949,11 @@ Repeat penalty: 1.0
 ## 🐛 Troubleshooting
 
 ### Common Issues
-**"Permission denied"**
+**"Permission denied" (Docker)**
 ```bash
-use sudo when starting docker
+# Ensure run_docker.sh is executable
+chmod +x run_docker.sh
+# Or use docker compose directly (see Quick Start)
 ```
 
 **"curl_cffi not installed"**
@@ -882,21 +970,27 @@ docker compose up qdrant
 ```
 
 **"Ollama connection error"**
-- Check Ollama is running: `docker compose ps`
-- Verify Ollama host: `OLLAMA_HOST` in `.env`
-- Try Ollama instead (free, local)
+- Ensure you started with the Ollama profile: `./run_docker.sh` or `docker compose --profile ollama up`
+- Check Ollama is running: `docker compose --profile ollama ps`
+- Verify `OLLAMA_HOST` in `.env` (Docker full stack: `http://ollama:11434`; local dev: `http://localhost:11480`)
+- If using Gemini-only, ensure **Cloud (Gemini)** is selected (Local is disabled when `GEMINI_ONLY=true`)
+
+**"Gemini not configured" / empty responses**
+- Set `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `.env` and restart
+- For Docker gemini-only: `./run_docker.sh --gemini-only` requires the key at startup
+- Check model names in `.env` match models available to your API key
 
 **"Ollama model not found"**
 ```bash
-# Pull the model
-docker compose exec ollama ollama pull llama3.2
+# Docker (Ollama profile)
+docker compose --profile ollama exec ollama ollama pull llama3.2
 
-# Or if running locally
+# Local
 ollama pull llama3.2
 ```
 
 **"Thinking tab not showing"**
-- For **Agentic** panel: thinking is shown when using a thinking model (default **AGENTIC_MODEL** = qwen3:0.6b). Ensure that model is pulled (`ollama pull qwen3:0.6b`) and optionally set `AGENTIC_MODEL` in `.env` (see [Using other local models](#using-other-local-models)).
+- For **Agentic** panel: thinking is shown when using a thinking model (default **AGENTIC_MODEL** = qwen3:0.6b on Ollama). Ensure that model is pulled (`ollama pull qwen3:0.6b`) or switch to Gemini with a capable model.
 - Other panels (Direct, Document, etc.) do not show a thinking trace unless the model returns one.
 - Check browser console for errors
 
@@ -977,7 +1071,7 @@ brew install ffmpeg                 # macOS
 ### Experiments to Try
 
 **Model Comparison:**
-- Same prompt on different Ollama models (llama3.2, mistral, qwen)
+- Same prompt on different backends (Ollama llama3.2 vs Gemini)
 - Compare refusal behaviors across models
 - Temperature impact on jailbreak success
 
@@ -1010,18 +1104,18 @@ brew install ffmpeg                 # macOS
 ✅ **Learning** - Understand how attacks work  
 ✅ **Experimentation** - Try different prompts quickly  
 ✅ **Payload Development** - Generate and test assets  
-✅ **Model Comparison** - Switch between different Ollama models
+✅ **Model Comparison** - Switch between Ollama and Gemini (or different local models)
 ✅ **Attack Chains** - Multi-step manual exploitation  
 ✅ **Screenshots** - Document vulnerabilities visually  
-```
 
 ---
 
 ## 📚 Additional Resources
 
 ### Related Documentation
-- **Main README**: `README.md` - Project overview, CLI testing, CI/CD
-- **Payloads Guide**: `payloads/README.md` - Asset generation details
+- **[`.env.example`](.env.example)** — Environment variable reference
+- **[`AWS_DEPLOY.md`](AWS_DEPLOY.md)** — Production Docker on AWS
+- **Payloads Guide**: [`payloads/README.md`](payloads/README.md) — Asset generation details
 
 ### External References
 - [OWASP LLM Top 10](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
@@ -1031,13 +1125,13 @@ brew install ffmpeg                 # macOS
 
 ---
 
-4. **Update Documentation** (this file)
+## 🤝 Contributing & issues
 
-### Reporting Issues
+### Reporting issues
 
 **Security vulnerabilities** (in the framework itself):
 - Email: sec@genbounty.com
-- Do NOT open public issues for framework vulnerabilities
+- Do **not** open public issues for framework vulnerabilities
 
 ## 📄 License
 
@@ -1067,8 +1161,9 @@ DVAIA concept inspired by:
 
 Built with:
 - [Flask](https://flask.palletsprojects.com/) - Web framework
-- [LangChain](https://github.com/langchain-ai/langchain) - LLM orchestration
+- [LangChain](https://github.com/langchain-ai/langchain) - LLM orchestration (agentic tool binding)
 - [Ollama](https://ollama.ai/) - Local model runtime
+- [Google Gemini](https://ai.google.dev/) - Optional cloud LLM backend
 - [Qdrant](https://qdrant.tech/) - Vector database
 - [curl_cffi](https://github.com/yifeikong/curl_cffi) - Browser-like requests
 - [ReportLab](https://www.reportlab.com/) - PDF generation
