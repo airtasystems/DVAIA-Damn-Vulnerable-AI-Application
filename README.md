@@ -4,6 +4,8 @@
 
 DVAIA is similar to DVWA (Damn Vulnerable Web Application) but designed specifically for testing LLM vulnerabilities. It provides a hands-on environment to explore prompt injection, indirect attacks, and other AI security issues using **local Ollama models**, **Google Gemini**, or **OpenAI** (cloud).
 
+![DVAIA web interface — attack panels, Settings, and payload generation](damn-vulnerable-ai-application-dvaia.jpg)
+
 ---
 
 ## 🎯 Overview
@@ -13,7 +15,7 @@ DVAIA is similar to DVWA (Damn Vulnerable Web Application) but designed specific
 - Runs on **http://127.0.0.1:5000** (Flask app)
 - **Local (Ollama)**, **Cloud (Gemini)**, or **Cloud (OpenAI)** — Settings backend toggle; cloud-only Docker modes skip Ollama entirely
 - Educational platform for understanding LLM attack vectors
-- 8 interactive panels (7 attack vectors + Agentic testing with multi-round conversation)
+- 8 attack panels + **Settings** (backend toggle, lab data reset, cache control)
 
 ---
 
@@ -25,9 +27,8 @@ The easiest way to run DVAIA with all dependencies:
 
 ```bash
 # Clone the repository
-git clone https://github.com/genbounty/DVAIA.git
-# or: git clone git@github.com:genbounty/DVAIA.git
-cd DVAIA
+git clone https://github.com/airtasystems/DVAIA-Damn-Vulnerable-AI-Application.git
+cd DVAIA-Damn-Vulnerable-AI-Application
 
 # Configure environment (required for Gemini-only; optional for Ollama)
 cp .env.example .env
@@ -65,8 +66,10 @@ Whisper (audio STT) and OCR still run locally in the app container in both modes
 **Stop the application:**
 
 ```bash
-docker compose down  # Stops and clears all data
+docker compose --profile ollama down   # Stops containers (Qdrant data persists in volume unless removed)
 ```
+
+> **Docker + Ollama:** Prefer `./run_docker.sh` over plain `docker compose up`. The script sets `OLLAMA_HOST=http://ollama:11434` inside the app container. If you set `OLLAMA_HOST=http://localhost:11480` in `.env` for host-native dev, that value breaks in-container requests (`Connection refused`). Host port **11480** maps to Ollama **11434** only for tools running on your machine, not from inside `dvaia-app`.
 
 ### Option 2: Local Development (Python venv)
 
@@ -225,6 +228,8 @@ Docker Compose (Ollama profile) auto-pulls `qwen2.5vl:7b` on first start (~6GB).
 
 PDF, text, CSV, and audio always use extract mode. Vision mode is useful for comparing OCR-bypass vs native image understanding on payload images.
 
+**OCR vs model answers (images):** In **extract mode**, the LLM only sees Tesseract OCR text — not pixels. Low-contrast overlays, blur, pink text, or noise often produce **partial reads** (e.g. `admin` → `adm`). Check the **extract preview** under the document dropdown before sending; use **vision mode** if OCR looks incomplete. Document Injection does **not** use Direct Chat **Max tokens** — that control applies only to the Direct Injection panel.
+
 ### Document Injection Whisper transcription
 
 **Audio payloads** (generated TTS, synthetic WAV, uploads) are transcribed with local **OpenAI Whisper** weights via `faster-whisper` — no Google/cloud STT required. Configure in `.env`:
@@ -259,11 +264,14 @@ ollama pull nomic-embed-text
 | Document Injection audio (STT) | `WHISPER_MODEL` | `base` |
 | RAG embeddings (Ollama) | `EMBEDDING_MODEL`| `nomic-embed-text`|
 | RAG embeddings (Gemini) | `EMBEDDING_MODEL_GEMINI` | `text-embedding-004` |
+| RAG embeddings (OpenAI) | `EMBEDDING_MODEL_OPENAI` | `text-embedding-3-small` |
 | Gemini chat/vision/agentic | `GEMINI_*_MODEL` | see `.env.example` |
+| OpenAI chat/vision/agentic | `OPENAI_*_MODEL` | see `.env.example` |
 | Gemini API key        | `GOOGLE_API_KEY` | (unset)           |
-| Skip Ollama in Docker | `GEMINI_ONLY`    | `false`           |
+| OpenAI API key        | `OPENAI_API_KEY` | (unset)           |
+| Skip Ollama in Docker | `GEMINI_ONLY` / `OPENAI_ONLY` | `false`           |
 
-Copy `.env.example` to `.env`, uncomment and set the variables you want. Restart the app after changing `.env`.
+Copy `.env.example` to `.env`, uncomment and set the variables you want. Restart the app after changing `.env`. **Never commit `.env`** — it is gitignored; GitHub push protection blocks commits that contain API keys.
 
 ---
 
@@ -275,7 +283,7 @@ Copy `.env.example` to `.env`, uncomment and set the variables you want. Restart
 Test prompts directly with no context injection.
 
 **Features:**
-- Model selection via **Settings → Backend** (Local Ollama or Cloud Gemini)
+- Model selection via **Settings → Backend** (Local Ollama, Cloud Gemini, or Cloud OpenAI)
 - Advanced sampling controls (Ollama; some options may not apply to Gemini):
   - **Temperature** (0-2): Randomness; use 1.2-2 for diverse jailbreaks
   - **Top K** (1-200): Token sampling; 100-200 for variety
@@ -791,6 +799,23 @@ python -m api  # Listens on 127.0.0.1:5000
 
 ---
 
+## ⚙️ Settings panel
+
+Open **Settings** in the sidebar for runtime options that do not require editing code:
+
+| Control | Purpose |
+|---------|---------|
+| **Backend** | Local (Ollama), Cloud (Gemini), or Cloud (OpenAI) — applies to chat, vision, agentic tools, and RAG embeddings for the session |
+| **Clear document store and RAG on each app start** | Maps to `RESET_DATA_ON_START` — wipes SQLite, uploads, and Qdrant on boot (restart container to apply) |
+| **Clear all lab data** | Removes uploaded documents, generated payload files, and all RAG collections — **empties document dropdowns** |
+| **Clear RAG index only** | Deletes Qdrant vectors only; uploads and payload files **remain** in dropdowns |
+| **Clear uploads only** | Deletes SQLite document rows and upload files; RAG vectors unchanged |
+| **Clear Gemini / OpenAI cache** | Resets cloud SDK clients after API key changes |
+
+**RAG vs document lists:** Document and RAG panels share a dropdown of **uploads** + **generated payloads**. That list is **not** the vector index. If “Clear RAG index” seems to do nothing in the UI, use **Clear all lab data** or delete uploads separately.
+
+---
+
 ## 🔧 Configuration
 
 See [`.env.example`](.env.example) for all variables with comments. Common settings:
@@ -809,9 +834,13 @@ cp .env.example .env
 | `AGENTIC_MODEL` | Agentic panel model |
 | `VISION_MODEL` | Document Injection vision mode |
 | `WHISPER_MODEL` | Local audio transcription |
-| `EMBEDDING_BACKEND` | RAG embeddings: `ollama` or `gemini` |
-| `OLLAMA_HOST` | Ollama URL (local dev: `http://localhost:11480`; Docker Ollama profile sets `http://ollama:11434`) |
+| `EMBEDDING_BACKEND` | RAG embeddings: `ollama`, `gemini`, or `openai` |
+| `OPENAI_ONLY` | Docker: skip Ollama; requires `OPENAI_API_KEY` |
+| `OLLAMA_HOST` | Ollama URL when app runs **on the host** (`http://localhost:11480`). `./run_docker.sh` forces `http://ollama:11434` inside Docker — do not rely on localhost there |
 | `QDRANT_URL` | Qdrant URL (Docker sets `QDRANT_HOST=qdrant` internally) |
+| `RESET_DATA_ON_START` | Wipe document DB, uploads, and RAG on each worker start |
+| `DATABASE_URI` / `UPLOAD_DIR` | Persist lab data under `data/` (recommended); `/tmp` paths lose data on container recreate |
+| `PAYLOADS_OUTPUT_DIR` | Generated payload output (default `data/payloads/generate`) |
 | `SECRET_KEY` | Flask session secret (generate for production) |
 
 ### Docker modes
@@ -969,11 +998,17 @@ docker compose up qdrant
 # Or skip RAG features (other panels still work)
 ```
 
-**"Ollama connection error"**
-- Ensure you started with the Ollama profile: `./run_docker.sh` or `docker compose --profile ollama up`
+**"Ollama connection error" / `Connection refused`**
+- Start with **`./run_docker.sh`** (local mode) — not plain `docker compose up` without the Ollama profile
 - Check Ollama is running: `docker compose --profile ollama ps`
-- Verify `OLLAMA_HOST` in `.env` (Docker full stack: `http://ollama:11434`; local dev: `http://localhost:11480`)
-- If using Gemini-only, ensure **Cloud (Gemini)** is selected (Local is disabled when `GEMINI_ONLY=true`)
+- **Inside Docker:** app must use `http://ollama:11434` (set automatically by `run_docker.sh`). `OLLAMA_HOST=http://localhost:11480` in `.env` is for **host-native** runs only and causes `Connection refused` from the container
+- **On the host:** use `http://localhost:11480` (Compose maps container `11434` → host `11480`)
+- If using cloud-only mode, select **Cloud (Gemini)** or **Cloud (OpenAI)** (Local is disabled when `GEMINI_ONLY` / `OPENAI_ONLY` is true)
+
+**"Git push rejected — secrets in commit"**
+- Remove `.env` from git history if it was committed; rotate exposed API keys
+- Keep secrets in `.env` only (gitignored); use `.env.example` for templates
+- Never `git add -f .env`
 
 **"Gemini not configured" / empty responses**
 - Set `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `.env` and restart
@@ -1013,6 +1048,11 @@ brew install ffmpeg                 # macOS
 - PDFs require: `PyPDF2` (included)
 - DOCX requires: `python-docx` (included)
 - Images require: `pytesseract` + `tesseract-ocr` system package
+
+**"Image answer looks cut off" / wrong policy text (e.g. `adm` instead of `admin`)**
+- Default **extract mode** uses OCR only — check the **extract preview** when selecting the image
+- Regenerate payload with higher contrast (dark text, no blur/low-contrast) or enable **Send images to vision model** (`qwen2.5vl:7b`, ~30–90s)
+- Terminal line `Context sent to model` shows what the LLM received (log preview is truncated; full text is still sent)
 
 ---
 
@@ -1164,6 +1204,8 @@ Built with:
 - [LangChain](https://github.com/langchain-ai/langchain) - LLM orchestration (agentic tool binding)
 - [Ollama](https://ollama.ai/) - Local model runtime
 - [Google Gemini](https://ai.google.dev/) - Optional cloud LLM backend
+- [OpenAI](https://openai.com/) - Optional cloud LLM backend
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) - Local audio transcription
 - [Qdrant](https://qdrant.tech/) - Vector database
 - [curl_cffi](https://github.com/yifeikong/curl_cffi) - Browser-like requests
 - [ReportLab](https://www.reportlab.com/) - PDF generation

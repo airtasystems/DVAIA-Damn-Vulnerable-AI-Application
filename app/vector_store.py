@@ -45,6 +45,12 @@ def reset_collection(llm_provider: Optional[str] = None) -> None:
         pass
 
 
+def invalidate_client_cache() -> None:
+    """Drop cached Qdrant client (e.g. after collections were deleted elsewhere)."""
+    global _client
+    _client = None
+
+
 def reset_all_rag_collections() -> List[str]:
     """Delete all RAG collections (explicit + default Ollama/Gemini names)."""
     import os
@@ -70,6 +76,7 @@ def reset_all_rag_collections() -> List[str]:
 
     if errors and not cleared:
         raise RuntimeError("Could not clear RAG collections: " + "; ".join(errors))
+    invalidate_client_cache()
     return cleared
 
 

@@ -36,6 +36,7 @@ from app import fetch as app_fetch
 from app import mfa as app_mfa
 from app import retrieval as app_retrieval
 from app.cache_maintenance import clear_pycache
+from app.startup import clear_document_store, clear_lab_data, clear_rag_index
 from app import embeddings as app_embeddings
 from app import vector_store as app_vector_store
 from app.config import get_secret_key, get_database_uri, get_upload_dir
@@ -744,25 +745,58 @@ def api_settings_update():
 @app.route("/api/settings/clear-cache", methods=["POST"])
 def api_settings_clear_cache():
     """
-    Clear runtime or persisted caches. Body: { "target": "rag" | "gemini" | "openai" | "pycache" }.
+    Clear runtime or persisted caches. Body target:
+      rag | documents | lab | gemini | openai | pycache
     """
     data = request.get_json(silent=True) or {}
     target = (data.get("target") or "").strip().lower()
-    if target not in ("rag", "gemini", "openai", "pycache"):
-        return jsonify({"error": "target must be rag, gemini, openai, or pycache"}), 400
+    allowed = ("rag", "documents", "lab", "gemini", "openai", "pycache")
+    if target not in allowed:
+        return jsonify({"error": f"target must be one of: {', '.join(allowed)}"}), 400
 
     try:
         if target == "rag":
-            collections = app_vector_store.reset_all_rag_collections()
+            collections = clear_rag_index()
             if collections:
-                message = "RAG index cleared."
+                message = (
+                    "RAG index cleared. Uploaded documents and generated payloads are unchanged — "
+                    "use “Clear all lab data” to empty document dropdowns."
+                )
             else:
-                message = "RAG index already empty (no collections found in Qdrant)."
+                message = (
+                    "RAG index already empty (no collections in Qdrant). "
+                    "Document dropdowns list uploads/payloads, not the vector index."
+                )
             return jsonify({
                 "ok": True,
                 "target": target,
                 "message": message,
                 "collections": collections,
+            })
+
+        if target == "documents":
+            result = clear_document_store()
+            n = result.get("documents_removed", 0)
+            return jsonify({
+                "ok": True,
+                "target": target,
+                "message": f"Document store cleared ({n} upload(s) removed). RAG vectors unchanged.",
+                **result,
+            })
+
+        if target == "lab":
+            result = clear_lab_data(include_payloads=True)
+            n_docs = result.get("documents_removed", 0)
+            n_payloads = result.get("payload_files_removed", 0)
+            cols = result.get("collections") or []
+            return jsonify({
+                "ok": True,
+                "target": target,
+                "message": (
+                    f"Lab data cleared: {n_docs} upload(s), {n_payloads} payload file(s), "
+                    f"{len(cols)} RAG collection(s)."
+                ),
+                **result,
             })
 
         if target == "gemini":

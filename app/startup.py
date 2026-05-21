@@ -3,7 +3,67 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
+
+
+def clear_document_store() -> Dict[str, Any]:
+    """Delete all uploaded documents (DB rows and files). Does not touch users/MFA or payloads."""
+    from app import documents as app_documents
+    from app.config import get_upload_dir
+
+    docs = app_documents.list_documents(user_id=None)
+    removed = 0
+    for doc in docs:
+        if app_documents.delete_document(doc["id"], user_id=None):
+            removed += 1
+
+    upload_path = Path(get_upload_dir())
+    if upload_path.is_dir():
+        shutil.rmtree(upload_path, ignore_errors=True)
+    upload_path.mkdir(parents=True, exist_ok=True)
+
+    return {"documents_removed": removed, "upload_dir": str(upload_path)}
+
+
+def clear_payload_outputs() -> Dict[str, Any]:
+    """Remove generated payload files under PAYLOADS_OUTPUT_DIR."""
+    from payloads.config import get_output_dir
+
+    out_dir = get_output_dir()
+    count = sum(1 for p in out_dir.rglob("*") if p.is_file()) if out_dir.is_dir() else 0
+    if out_dir.is_dir():
+        shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return {"payload_files_removed": count, "payloads_output_dir": str(out_dir)}
+
+
+def clear_rag_index() -> List[str]:
+    """Delete all RAG Qdrant collections."""
+    from app import vector_store as app_vector_store
+
+    return app_vector_store.reset_all_rag_collections()
+
+
+def clear_lab_data(*, include_payloads: bool = True) -> Dict[str, Any]:
+    """Wipe uploads, optional generated payloads, and RAG vectors (keeps users table)."""
+    doc_result = clear_document_store()
+    payload_result: Optional[Dict[str, Any]] = None
+    if include_payloads:
+        payload_result = clear_payload_outputs()
+
+    collections: List[str] = []
+    try:
+        collections = clear_rag_index()
+    except Exception as exc:
+        raise RuntimeError(f"RAG clear failed: {exc}") from exc
+
+    out: Dict[str, Any] = {
+        **doc_result,
+        "collections": collections,
+    }
+    if payload_result:
+        out.update(payload_result)
+    return out
 
 
 def apply_startup_reset() -> Dict[str, Any]:
@@ -17,7 +77,6 @@ def apply_startup_reset() -> Dict[str, Any]:
         return {"applied": False, "reason": "reset_data_on_start disabled"}
 
     from app.config import get_database_uri, get_upload_dir
-    from app import vector_store as app_vector_store
 
     db_path = Path(get_database_uri())
     if db_path.is_file():
@@ -27,9 +86,9 @@ def apply_startup_reset() -> Dict[str, Any]:
     if upload_path.is_dir():
         shutil.rmtree(upload_path, ignore_errors=True)
 
-    collections = []
+    collections: List[str] = []
     try:
-        collections = app_vector_store.reset_all_rag_collections()
+        collections = clear_rag_index()
     except Exception:
         pass
 

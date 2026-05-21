@@ -289,7 +289,8 @@ elif [ "$GEMINI_ONLY_MODE" = true ]; then
   echo "  Whisper/OCR still run locally in the app container for audio/image tests"
   echo ""
 else
-  export OLLAMA_HOST="${OLLAMA_HOST:-http://ollama:11434}"
+  # In-container URL; .env localhost:11480 is for host-native runs only.
+  export OLLAMA_HOST="http://ollama:11434"
   export GEMINI_ONLY=false
   export OPENAI_ONLY=false
   COMPOSE_ARGS=(--profile ollama "${COMPOSE_ARGS[@]}")

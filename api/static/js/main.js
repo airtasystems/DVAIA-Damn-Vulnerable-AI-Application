@@ -239,6 +239,14 @@ async function clearSettingsCache(target, buttonEl) {
       modelsConfigCache = null;
       await loadModelsConfig();
     }
+    if (target === "rag" || target === "documents" || target === "lab") {
+      if (typeof loadDocuments === "function") await loadDocuments();
+      const previewEl = document.getElementById("rag_retrieve_preview");
+      if (previewEl) {
+        previewEl.textContent = "";
+        previewEl.style.display = "none";
+      }
+    }
     let msg = data.message || ("Cleared " + target);
     if (data.collections && data.collections.length) {
       msg += " Collections: " + data.collections.join(", ") + ".";
@@ -253,9 +261,28 @@ async function clearSettingsCache(target, buttonEl) {
   }
 }
 
+document.getElementById("btn_clear_lab_data")?.addEventListener("click", function () {
+  if (
+    !confirm(
+      "Delete all uploaded documents, generated payload files, and RAG vectors? This empties document dropdowns."
+    )
+  )
+    return;
+  clearSettingsCache("lab", this);
+});
 document.getElementById("btn_clear_rag_cache")?.addEventListener("click", function () {
-  if (!confirm("Delete all RAG chunks from Qdrant? You will need to re-index documents.")) return;
+  if (
+    !confirm(
+      "Delete all RAG chunks from Qdrant only? Uploads and payload files will stay in the document lists."
+    )
+  )
+    return;
   clearSettingsCache("rag", this);
+});
+document.getElementById("btn_clear_documents_cache")?.addEventListener("click", function () {
+  if (!confirm("Delete all uploaded documents from the store? Generated payloads and RAG index are unchanged."))
+    return;
+  clearSettingsCache("documents", this);
 });
 document.getElementById("btn_clear_gemini_cache")?.addEventListener("click", function () {
   clearSettingsCache("gemini", this);

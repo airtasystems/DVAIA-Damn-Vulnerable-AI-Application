@@ -66,7 +66,8 @@ services:
       - GEMINI_ONLY=${GEMINI_ONLY:-false}
       - OPENAI_ONLY=${OPENAI_ONLY:-false}
       - RESET_DATA_ON_START=${RESET_DATA_ON_START:-false}
-      - OLLAMA_HOST=${OLLAMA_HOST:-}
+      # Overrides .env localhost — app container must reach the ollama service by name.
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - DEFAULT_MODEL=${DEFAULT_MODEL:-ollama:llama3.2}

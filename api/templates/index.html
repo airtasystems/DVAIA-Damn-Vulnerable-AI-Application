@@ -724,9 +724,11 @@ Bob,bob@example.com,2024-01-02</textarea>
 
         <section class="settings-section">
           <h3>Cache control</h3>
-          <p class="text-muted">Clear persisted or in-memory caches. RAG clear deletes Qdrant collections (<code>rag_chunks</code>, <code>rag_chunks_gemini</code>, <code>rag_chunks_openai</code>, and any explicit <code>QDRANT_COLLECTION</code>). Cloud cache clears reset SDK clients after API key changes. __pycache__ clear removes Python bytecode folders under the project (excludes <code>venv/</code>; may report zero removed in Docker when bytecode is disabled).</p>
+          <p class="text-muted">Document dropdowns (Document / RAG panels) list <strong>uploads</strong> and <strong>generated payloads</strong> — separate from the Qdrant RAG index. Use <strong>Clear all lab data</strong> to empty those lists and wipe vectors. <strong>Clear RAG index</strong> only deletes Qdrant collections (<code>rag_chunks</code>, <code>rag_chunks_gemini</code>, <code>rag_chunks_openai</code>, and any explicit <code>QDRANT_COLLECTION</code>).</p>
           <div class="settings-cache-actions">
-            <button type="button" id="btn_clear_rag_cache" class="btn">Clear RAG index</button>
+            <button type="button" id="btn_clear_lab_data" class="btn-primary">Clear all lab data</button>
+            <button type="button" id="btn_clear_rag_cache" class="btn">Clear RAG index only</button>
+            <button type="button" id="btn_clear_documents_cache" class="btn">Clear uploads only</button>
             <button type="button" id="btn_clear_gemini_cache" class="btn">Clear Gemini cache</button>
             <button type="button" id="btn_clear_openai_cache" class="btn">Clear OpenAI cache</button>
             <button type="button" id="btn_clear_pycache" class="btn">Clear __pycache__</button>
